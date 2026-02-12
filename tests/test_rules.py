@@ -48,3 +48,26 @@ def test_decision_rejects_ads() -> None:
     decision = engine.decide(_msg("vakansiya reklama va kurs +998901234567"))
     assert decision.should_forward is False
     assert decision.reason == "excluded_category"
+
+
+def test_decision_rejects_driver_offer_with_people_needed() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=10))
+    raw = (
+        "\u041f\u0438\u0442\u0435\u0440\u0434\u0430\u043d \u0445\u043e\u0440\u0430\u0437\u043c\u0433\u0430 "
+        "\u043c\u043e\u0448\u0438\u043d\u0434\u0430 \u043a\u0435\u0442\u044f\u043f\u043c\u0430\u043d "
+        "2 \u043e\u0434\u0430\u043c \u043a\u0435\u0440\u0430\u043a +998901234567"
+    )
+    decision = engine.decide(_msg(raw))
+    assert decision.should_forward is False
+    assert decision.reason == "taxi_offer"
+
+
+def test_decision_rejects_service_offer_message() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=10))
+    raw = (
+        "toshkentdan zarbdorga yuraman zakazga ham yuraman "
+        "kobalt bagaj bor tel +998945741041"
+    )
+    decision = engine.decide(_msg(raw))
+    assert decision.should_forward is False
+    assert decision.reason == "taxi_offer"

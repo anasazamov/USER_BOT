@@ -38,3 +38,16 @@ def test_fast_filter_accepts_cyrillic_order() -> None:
     )
     result = engine.evaluate(text)
     assert result.passed is True
+
+
+def test_fast_filter_rejects_driver_offer_with_people_needed() -> None:
+    engine = FastFilter(min_length=10)
+    text = normalize_text(
+        "\u043f\u0438\u0442\u0435\u0440\u0434\u0430\u043d "
+        "\u0445\u043e\u0440\u0430\u0437\u043c\u0433\u0430 "
+        "\u043c\u043e\u0448\u0438\u043d\u0434\u0430 \u043a\u0435\u0442\u044f\u043f\u043c\u0430\u043d "
+        "2 \u043e\u0434\u0430\u043c \u043a\u0435\u0440\u0430\u043a +998901234567"
+    )
+    result = engine.evaluate(text)
+    assert result.passed is False
+    assert result.reason == "likely_taxi_offer"

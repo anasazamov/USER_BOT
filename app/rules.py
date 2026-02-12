@@ -48,6 +48,21 @@ class DecisionEngine:
         )
         self.suffix_route_pattern = re.compile(r"\b[a-z0-9]{3,}dan\b.*\b[a-z0-9]{2,}ga\b")
         self.people_pattern = re.compile(r"\b\d+\s*(odam|kishi|passajir|joy)\b")
+        self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
+        self.request_phrase_pattern = re.compile(
+            r"\b(?:taxi|taksi|moshin|mashina)\s+kerak\b"
+            r"|\b(?:yuradigan|yuradiglar)\s+bormi(?:kan)?\b"
+            r"|\bkim\s+bor\b"
+            r"|\bolib\s+ketadig(?:an|lar)\s+bormi\b"
+        )
+        self.offer_context_pattern = re.compile(
+            r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
+            r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
+            r"joy\s+bor|bagaj|pochta|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+        )
+        self.vehicle_model_pattern = re.compile(
+            r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
+        )
 
         # Contact is mandatory to pass final decision.
         self.phone_pattern = re.compile(r"(?<!\d)(?:\+?998)?[\s\-()]*(?:\d[\s\-()]*){7,12}(?!\d)")
@@ -73,6 +88,9 @@ class DecisionEngine:
         has_transport = bool(self.transport_pattern.search(text))
         has_request = bool(self.request_pattern.search(text))
         has_offer = bool(self.offer_pattern.search(text))
+        has_request_phrase = bool(self.request_phrase_pattern.search(text))
+        has_offer_context = bool(self.offer_context_pattern.search(text))
+        has_vehicle_model = bool(self.vehicle_model_pattern.search(text))
         has_route = bool(self.route_pattern.search(text)) or bool(self.suffix_route_pattern.search(text))
         region_match = self.geo.detect_region(text)
         has_location = bool(self.location_pattern.search(text)) or bool(stemmed_tokens & self.location_tokens) or bool(
@@ -80,6 +98,7 @@ class DecisionEngine:
         )
         has_exclude = bool(self.exclude_pattern.search(text))
         has_people = bool(self.people_pattern.search(text))
+        has_passenger_needed = bool(self.passenger_needed_pattern.search(text))
 
         has_phone = bool(self.phone_pattern.search(raw_text)) or bool(self.phone_pattern.search(text))
         has_username = bool(self.username_pattern.search(raw_text))
@@ -91,13 +110,23 @@ class DecisionEngine:
         if not has_contact:
             return Decision(False, False, reason="no_contact")
 
-        # Offer messages are ignored unless there is explicit request signal.
-        if has_offer and not has_request:
+        # Offer messages are ignored unless there is explicit request phrase.
+        if has_offer and not has_request_phrase:
+            return Decision(False, False, reason="taxi_offer")
+        offer_dominant = (
+            has_offer_context
+            or has_vehicle_model
+            or (has_offer and has_passenger_needed)
+            or (has_passenger_needed and has_route and has_transport)
+        )
+        if offer_dominant and not has_request_phrase:
             return Decision(False, False, reason="taxi_offer")
 
         score = 0
-        if has_request:
+        if has_request_phrase:
             score += 2
+        elif has_request:
+            score += 1
         if has_transport:
             score += 1
         if has_route:
@@ -109,7 +138,8 @@ class DecisionEngine:
         if has_contact:
             score += 2
 
-        if score >= 5 and (has_request or has_route):
+        order_signal = has_request_phrase or has_request or (has_transport and has_route)
+        if score >= 5 and order_signal and not offer_dominant:
             reply = "Buyurtma qabul qilindi."
             return Decision(
                 True,
@@ -126,8 +156,24 @@ class DecisionEngine:
             if self._keyword_version >= 0 and not force:
                 return
             self.transport_tokens = {"taxi", "taksi", "moshin", "mashina", "yandex"}
-            self.request_tokens = {"kerak", "bormi", "buyurtma", "zakaz", "yuradigan"}
-            self.offer_tokens = {"boraman", "ketaman", "yuraman", "beraman", "taklif"}
+            self.request_tokens = {"kerak", "bormi", "buyurtma", "zakaz", "yuradigan", "yuradiglar"}
+            self.offer_tokens = {
+                "boraman",
+                "ketaman",
+                "yuraman",
+                "beraman",
+                "taklif",
+                "ketyapman",
+                "ketyapmiz",
+                "olibketaman",
+                "olibketamiz",
+                "zakazga",
+                "joybor",
+                "shafermiz",
+                "haydovchimiz",
+                "chiqaman",
+                "chiqamiz",
+            }
             self.location_tokens = {"toshkent", "samarqand", "andijon", "namangan", "fargona", "nukus", "buxoro"}
             self.route_tokens = {"dan", "ga", "from", "to"}
             self.exclude_tokens = {"vakansiya", "reklama", "kurs", "kanal", "job"}
