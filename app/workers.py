@@ -37,7 +37,7 @@ class WorkerPool:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def _worker(self, idx: int) -> None:
-        logger.info("worker_started", extra={"action": "worker_start", "reason": idx})
+        logger.info("worker_started", extra={"action": "worker_start", "worker": idx})
         while not self._stop.is_set():
             try:
                 item = await self.queue.get(timeout=self.poll_timeout)
@@ -47,7 +47,26 @@ class WorkerPool:
                 continue
 
             try:
+                logger.info(
+                    "worker_message_received",
+                    extra={
+                        "action": "worker_receive",
+                        "worker": idx,
+                        "chat_id": item.envelope.chat_id,
+                        "message_id": item.envelope.message_id,
+                        "queue_size": self.queue.qsize(),
+                    },
+                )
                 await self.processor(item)
+                logger.info(
+                    "worker_message_processed",
+                    extra={
+                        "action": "worker_processed",
+                        "worker": idx,
+                        "chat_id": item.envelope.chat_id,
+                        "message_id": item.envelope.message_id,
+                    },
+                )
             except Exception:
                 logger.exception("worker_failed")
             finally:

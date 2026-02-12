@@ -269,6 +269,27 @@ class ActionRepository:
             status = await conn.execute(query, key)
         return status.endswith("1")
 
+    async def fetch_chat_read_states(self) -> dict[int, int]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = "SELECT chat_id, last_seen_message_id FROM chat_read_state"
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query)
+        return {int(row["chat_id"]): int(row["last_seen_message_id"]) for row in rows}
+
+    async def upsert_chat_read_state(self, chat_id: int, last_seen_message_id: int) -> None:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        INSERT INTO chat_read_state (chat_id, last_seen_message_id, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (chat_id) DO UPDATE SET
+            last_seen_message_id = GREATEST(chat_read_state.last_seen_message_id, EXCLUDED.last_seen_message_id),
+            updated_at = NOW()
+        """
+        async with self.db.pool.acquire() as conn:
+            await conn.execute(query, chat_id, last_seen_message_id)
+
     async def upsert_discovered_group(
         self,
         peer_id: int,

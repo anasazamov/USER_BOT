@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS message_audit (
     reason TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_read_state (
+    chat_id BIGINT PRIMARY KEY,
+    last_seen_message_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_read_state_updated_at ON chat_read_state (updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS discovered_groups (
     id BIGSERIAL PRIMARY KEY,
     peer_id BIGINT NOT NULL UNIQUE,

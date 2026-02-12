@@ -39,6 +39,9 @@ class Settings:
     discovery_interval_sec: int = 1800
     discovery_query_limit: int = 20
     discovery_join_batch: int = 4
+    history_sync_enabled: bool = True
+    history_sync_interval_sec: int = 300
+    history_sync_batch_size: int = 120
     admin_web_enabled: bool = True
     admin_web_host: str = "0.0.0.0"
     admin_web_port: int = 1311
@@ -91,6 +94,9 @@ class Settings:
             discovery_interval_sec=int(os.environ.get("DISCOVERY_INTERVAL_SEC", "1800")),
             discovery_query_limit=int(os.environ.get("DISCOVERY_QUERY_LIMIT", "20")),
             discovery_join_batch=int(os.environ.get("DISCOVERY_JOIN_BATCH", "4")),
+            history_sync_enabled=_parse_bool(os.environ.get("HISTORY_SYNC_ENABLED", "true")),
+            history_sync_interval_sec=int(os.environ.get("HISTORY_SYNC_INTERVAL_SEC", "300")),
+            history_sync_batch_size=int(os.environ.get("HISTORY_SYNC_BATCH_SIZE", "120")),
             admin_web_enabled=_parse_bool(os.environ.get("ADMIN_WEB_ENABLED", "true")),
             admin_web_host=os.environ.get("ADMIN_WEB_HOST", "0.0.0.0"),
             admin_web_port=int(os.environ.get("ADMIN_WEB_PORT", "1311")),

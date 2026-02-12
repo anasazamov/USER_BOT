@@ -51,15 +51,23 @@ class GroupDiscoveryManager:
             if not self.client.is_connected():
                 await asyncio.sleep(10)
                 continue
+            if not await self._is_authorized():
+                await asyncio.sleep(10)
+                continue
             try:
                 runtime = self.runtime_config.snapshot() if self.runtime_config else None
                 if runtime and not runtime.discovery_enabled:
+                    logger.info("group_discovery_skipped", extra={"action": "discovery", "reason": "disabled"})
                     await asyncio.sleep(self.interval_sec)
                     continue
 
                 queries = runtime.discovery_queries if runtime else self.queries
                 query_limit = runtime.discovery_query_limit if runtime else self.query_limit
                 join_batch = runtime.discovery_join_batch if runtime else self.join_batch
+                logger.info(
+                    "group_discovery_iteration",
+                    extra={"action": "discovery", "count": len(queries), "reason": f"limit={query_limit}"},
+                )
 
                 for query in queries:
                     await self._discover_query(query, query_limit=query_limit)
@@ -71,6 +79,7 @@ class GroupDiscoveryManager:
     async def _discover_query(self, query: str, query_limit: int | None = None) -> None:
         limit = query_limit if query_limit is not None else self.query_limit
         result = await self.client(functions.contacts.SearchRequest(q=query, limit=limit))
+        discovered = 0
         for chat in result.chats:
             if not isinstance(chat, types.Channel):
                 continue
@@ -85,10 +94,16 @@ class GroupDiscoveryManager:
                 source_query=query,
                 joined=not chat.left,
             )
+            discovered += 1
+        logger.info(
+            "group_discovery_query_done",
+            extra={"action": "discovery_query", "reason": query, "count": discovered},
+        )
 
     async def _join_pending(self, join_batch: int | None = None) -> None:
         limit = join_batch if join_batch is not None else self.join_batch
         pending = await self.repository.fetch_unjoined_public_groups(limit=limit)
+        logger.info("group_discovery_join_batch", extra={"action": "join_public_batch", "count": len(pending)})
         for group in pending:
             joined = await self.executor.try_join_public(group.username, group.peer_id)
             if joined:
@@ -96,3 +111,10 @@ class GroupDiscoveryManager:
                 logger.info("joined_public_group", extra={"chat_id": group.peer_id, "action": "join_public"})
             else:
                 await self.repository.mark_group_error(group.peer_id, "join_failed")
+
+    async def _is_authorized(self) -> bool:
+        try:
+            return await self.client.is_user_authorized()
+        except Exception:
+            logger.debug("group_discovery_auth_check_failed")
+            return False

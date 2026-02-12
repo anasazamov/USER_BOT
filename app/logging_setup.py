@@ -16,7 +16,19 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        for extra_key in ("chat_id", "message_id", "action", "decision", "reason"):
+        for extra_key in (
+            "chat_id",
+            "message_id",
+            "action",
+            "decision",
+            "reason",
+            "source",
+            "target",
+            "status",
+            "count",
+            "queue_size",
+            "worker",
+        ):
             value = getattr(record, extra_key, None)
             if value is not None:
                 payload[extra_key] = value

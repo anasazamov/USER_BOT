@@ -42,12 +42,23 @@ class InviteLinkManager:
             if not self.client.is_connected():
                 await asyncio.sleep(10)
                 continue
+            if not await self._is_authorized():
+                await asyncio.sleep(10)
+                continue
             try:
                 links = await self.repository.fetch_active_invite_links()
+                logger.info("invite_iteration", extra={"action": "invite_scan", "count": len(links)})
                 for link in links:
                     joined = await self.executor.try_join(link)
                     if joined:
-                        logger.info("joined_private_group", extra={"action": "join"})
+                        logger.info("joined_private_group", extra={"action": "join", "reason": link[:120]})
             except Exception:
                 logger.exception("invite_manager_iteration_failed")
             await asyncio.sleep(self.interval_sec)
+
+    async def _is_authorized(self) -> bool:
+        try:
+            return await self.client.is_user_authorized()
+        except Exception:
+            logger.debug("invite_manager_auth_check_failed")
+            return False

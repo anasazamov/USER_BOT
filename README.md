@@ -23,6 +23,9 @@ Tavsiya etiladi:
 - `FORWARD_TARGET`
 - `OWNER_USER_ID`
 - `ADMIN_WEB_TOKEN`
+- `HISTORY_SYNC_ENABLED`
+- `HISTORY_SYNC_INTERVAL_SEC`
+- `HISTORY_SYNC_BATCH_SIZE`
 
 DB eslatma:
 
@@ -81,6 +84,16 @@ Tekshirish:
 
 ```bash
 docker compose ps
+```
+
+```bash
+docker run -d \
+  --name user_bot \
+  --restart unless-stopped \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  -p 1311:1311 \
+  user_bot
 ```
 
 ## Foydalanish
@@ -143,6 +156,10 @@ Private guruh `id` ni olish:
 - original matn
 - hudud hashtag
 - source link (`Manba`)
+6. History sync yoqilgan bo'lsa:
+- startupda guruhlar tarixidan yangi xabarlar o'qiladi
+- interval bo'yicha qayta scan bo'ladi
+- yangi qo'shilgan guruhlar ham keyingi sync'da tarix bilan birga o'qiladi
 
 ### 5) Guruh topish va qo'shilish
 
@@ -155,6 +172,16 @@ Public:
 
 - `DISCOVERY_ENABLED=true` bo'lsa querylar orqali public group discovery ishlaydi.
 - Topilgan guruhlar navbat bilan join qilinadi (`join_limit_day` cheklovi bilan).
+
+## Logging
+
+- Loglar JSON formatda chiqadi (`stdout`).
+- Harakatlar bo'yicha loglar bor: message receive/filter/queue, decision, publish/reply/join, history sync.
+- Dockerda ko'rish:
+
+```bash
+docker logs -f user_bot
+```
 
 ## Test
 

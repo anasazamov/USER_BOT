@@ -74,7 +74,26 @@ class ActionExecutor:
             region_tag=decision.region_tag,
         )
         target_entity = self._resolve_forward_target(forward_target)
+        logger.info(
+            "publish_attempt",
+            extra={
+                "action": "publish_attempt",
+                "chat_id": chat_id,
+                "message_id": msg.envelope.message_id,
+                "target": str(target_entity),
+            },
+        )
         await self.client.send_message(entity=target_entity, message=outbound, link_preview=False)
+        logger.info(
+            "publish_ok",
+            extra={
+                "action": "publish",
+                "chat_id": chat_id,
+                "message_id": msg.envelope.message_id,
+                "target": str(target_entity),
+                "status": "ok",
+            },
+        )
         await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish", "ok")
 
         if decision.should_reply and decision.reply_text:
@@ -86,18 +105,34 @@ class ActionExecutor:
             )
             if can_reply:
                 await self._simulate_typing(chat_id)
+                logger.info(
+                    "reply_attempt",
+                    extra={"action": "reply_attempt", "chat_id": chat_id, "message_id": msg.envelope.message_id},
+                )
                 await self.client.send_message(entity=chat_id, message=decision.reply_text)
+                logger.info(
+                    "reply_ok",
+                    extra={
+                        "action": "reply",
+                        "chat_id": chat_id,
+                        "message_id": msg.envelope.message_id,
+                        "status": "ok",
+                    },
+                )
                 await self.repository.insert_action(chat_id, msg.envelope.message_id, "reply", "ok")
 
     async def try_join(self, invite_link: str) -> bool:
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
         join_limit_day = runtime.join_limit_day if runtime else self.settings.join_limit_day
         if not await self.cooldown.allow_join(join_limit_day):
+            logger.info("join_blocked_limit", extra={"action": "join", "reason": "join_limit"})
             return False
         try:
             await self._human_pause()
             invite_hash = invite_link.rsplit("/", 1)[-1].lstrip("+")
+            logger.info("join_attempt", extra={"action": "join_attempt", "reason": invite_link[:120]})
             await self.client(functions.messages.ImportChatInviteRequest(invite_hash))
+            logger.info("join_ok", extra={"action": "join", "status": "ok"})
             await self.repository.insert_action(0, 0, "join", "ok")
             return True
         except Exception:
@@ -111,10 +146,16 @@ class ActionExecutor:
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
         join_limit_day = runtime.join_limit_day if runtime else self.settings.join_limit_day
         if not await self.cooldown.allow_join(join_limit_day):
+            logger.info("join_public_blocked_limit", extra={"action": "join_public", "chat_id": peer_id})
             return False
         try:
             await self._human_pause()
+            logger.info(
+                "join_public_attempt",
+                extra={"action": "join_public_attempt", "chat_id": peer_id, "reason": username},
+            )
             await self.client(functions.channels.JoinChannelRequest(channel=username))
+            logger.info("join_public_ok", extra={"action": "join_public", "chat_id": peer_id, "status": "ok"})
             await self.repository.insert_action(peer_id, 0, "join_public", "ok")
             return True
         except Exception:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from contextlib import suppress
@@ -44,6 +45,10 @@ class TelegramUserbot:
         self.repository = repository
         self.keyword_service = keyword_service
         self._owner_user_id = settings.owner_user_id
+        self._chat_last_seen: dict[int, int] = {}
+        self._dirty_chat_states: set[int] = set()
+        self._history_task: asyncio.Task[None] | None = None
+        self._history_stop = asyncio.Event()
         self.workers = WorkerPool(
             queue=queue,
             processor=self._process_message,
@@ -60,45 +65,18 @@ class TelegramUserbot:
             raw_text = self._extract_text(event)
             if raw_text:
                 await self._discover_private_invites(raw_text, int(event.chat_id))
-
             if event.is_private:
                 return
-            if not raw_text:
-                logger.info(
-                    "message_filtered",
-                    extra={"chat_id": event.chat_id, "message_id": getattr(event, "id", 0), "reason": "no_text"},
-                )
-                return
-
-            normalized = normalize_text(raw_text)
-            if not normalized:
-                logger.info(
-                    "message_filtered",
-                    extra={"chat_id": event.chat_id, "message_id": getattr(event, "id", 0), "reason": "empty"},
-                )
-                return
-
-            result = self.filter_engine.evaluate(normalized)
-            if not result.passed:
-                logger.info(
-                    "message_filtered",
-                    extra={
-                        "chat_id": event.chat_id,
-                        "message_id": getattr(event, "id", 0),
-                        "reason": result.reason,
-                    },
-                )
-                return
-
-            envelope = MessageEnvelope(
+            source = "edited" if isinstance(event, events.MessageEdited.Event) else "realtime"
+            await self._ingest_message(
                 chat_id=int(event.chat_id),
-                message_id=event.id,
+                message_id=int(getattr(event, "id", 0)),
                 sender_id=event.sender_id,
                 raw_text=raw_text,
                 chat_username=getattr(getattr(event, "chat", None), "username", None),
                 chat_title=getattr(getattr(event, "chat", None), "title", None),
+                source=source,
             )
-            await self.queue.put(NormalizedMessage(envelope=envelope, normalized_text=normalized))
 
         @self.client.on(events.NewMessage(incoming=True))
         async def on_new_message(event: events.NewMessage.Event) -> None:
@@ -118,14 +96,240 @@ class TelegramUserbot:
         if self._owner_user_id is None:
             me = await self.client.get_me()
             self._owner_user_id = int(me.id)
+        await self._load_chat_read_states()
+        if self.settings.history_sync_enabled:
+            await self._history_sync_once(source="startup")
+            await self._flush_chat_read_states()
+            self._history_task = asyncio.create_task(self._history_sync_loop(), name="history-sync")
         logger.info("userbot_started")
         await self.client.run_until_disconnected()
 
     async def shutdown(self) -> None:
+        self._history_stop.set()
+        if self._history_task:
+            self._history_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._history_task
+        with suppress(Exception):
+            await self._flush_chat_read_states()
         with suppress(Exception):
             await self.workers.stop()
         with suppress(Exception):
             await self.client.disconnect()
+
+    async def _ingest_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        sender_id: int | None,
+        raw_text: str,
+        chat_username: str | None,
+        chat_title: str | None,
+        source: str,
+    ) -> None:
+        if message_id <= 0:
+            return
+
+        self._mark_chat_seen(chat_id, message_id)
+        logger.info(
+            "message_received",
+            extra={
+                "action": "message_receive",
+                "source": source,
+                "chat_id": chat_id,
+                "message_id": message_id,
+            },
+        )
+
+        if not raw_text:
+            logger.info(
+                "message_filtered",
+                extra={
+                    "action": "filter_drop",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reason": "no_text",
+                },
+            )
+            return
+
+        normalized = normalize_text(raw_text)
+        if not normalized:
+            logger.info(
+                "message_filtered",
+                extra={
+                    "action": "filter_drop",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reason": "empty",
+                },
+            )
+            return
+
+        result = self.filter_engine.evaluate(normalized)
+        if not result.passed:
+            logger.info(
+                "message_filtered",
+                extra={
+                    "action": "filter_drop",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reason": result.reason,
+                },
+            )
+            return
+
+        envelope = MessageEnvelope(
+            chat_id=chat_id,
+            message_id=message_id,
+            sender_id=sender_id,
+            raw_text=raw_text,
+            chat_username=chat_username,
+            chat_title=chat_title,
+        )
+        await self.queue.put(NormalizedMessage(envelope=envelope, normalized_text=normalized))
+        logger.info(
+            "message_queued",
+            extra={
+                "action": "queue_put",
+                "source": source,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "queue_size": self.queue.qsize(),
+            },
+        )
+
+    async def _history_sync_loop(self) -> None:
+        while not self._history_stop.is_set():
+            if not self.client.is_connected():
+                await asyncio.sleep(5)
+                continue
+            if not await self.client.is_user_authorized():
+                await asyncio.sleep(5)
+                continue
+            try:
+                await self._history_sync_once(source="history")
+                await self._flush_chat_read_states()
+            except Exception:
+                logger.exception("history_sync_loop_failed")
+            await asyncio.sleep(self.settings.history_sync_interval_sec)
+
+    async def _history_sync_once(self, source: str) -> None:
+        logger.info("history_sync_started", extra={"action": "history_sync", "source": source})
+        scanned_chats = 0
+        scanned_messages = 0
+        for dialog in await self.client.get_dialogs():
+            if not (dialog.is_group or dialog.is_channel):
+                continue
+            scanned_chats += 1
+            try:
+                processed = await self._scan_dialog_history(dialog, source=source)
+                scanned_messages += processed
+            except Exception:
+                logger.exception(
+                    "history_chat_scan_failed",
+                    extra={"action": "history_chat_scan", "chat_id": int(getattr(dialog, "id", 0))},
+                )
+
+        logger.info(
+            "history_sync_completed",
+            extra={
+                "action": "history_sync_done",
+                "source": source,
+                "count": scanned_messages,
+                "reason": f"chats={scanned_chats}",
+            },
+        )
+
+    async def _scan_dialog_history(self, dialog: object, source: str) -> int:
+        chat_id = int(getattr(dialog, "id"))
+        chat_title = getattr(dialog, "name", "") or ""
+        entity = getattr(dialog, "entity")
+        chat_username = getattr(entity, "username", None)
+        last_seen = self._chat_last_seen.get(chat_id, 0)
+
+        scanned = 0
+        max_seen = last_seen
+        async for message in self.client.iter_messages(
+            entity=entity,
+            min_id=last_seen,
+            reverse=True,
+            limit=self.settings.history_sync_batch_size,
+        ):
+            message_id = int(getattr(message, "id", 0) or 0)
+            if message_id <= 0:
+                continue
+            if message_id > max_seen:
+                max_seen = message_id
+            if bool(getattr(message, "out", False)):
+                continue
+
+            raw_text = self._extract_text_from_message(message)
+            if raw_text:
+                await self._discover_private_invites(raw_text, chat_id)
+            await self._ingest_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                sender_id=getattr(message, "sender_id", None),
+                raw_text=raw_text,
+                chat_username=chat_username,
+                chat_title=chat_title,
+                source=source,
+            )
+            scanned += 1
+
+        if max_seen > last_seen:
+            self._mark_chat_seen(chat_id, max_seen)
+
+        logger.info(
+            "history_chat_scanned",
+            extra={
+                "action": "history_chat_scan",
+                "source": source,
+                "chat_id": chat_id,
+                "count": scanned,
+                "reason": f"last_seen={max_seen}",
+            },
+        )
+        return scanned
+
+    async def _load_chat_read_states(self) -> None:
+        try:
+            self._chat_last_seen = await self.repository.fetch_chat_read_states()
+            logger.info(
+                "chat_read_state_loaded",
+                extra={"action": "state_load", "count": len(self._chat_last_seen)},
+            )
+        except Exception:
+            logger.exception("chat_read_state_load_failed")
+            self._chat_last_seen = {}
+
+    def _mark_chat_seen(self, chat_id: int, message_id: int) -> None:
+        previous = self._chat_last_seen.get(chat_id, 0)
+        if message_id > previous:
+            self._chat_last_seen[chat_id] = message_id
+            self._dirty_chat_states.add(chat_id)
+
+    async def _flush_chat_read_states(self) -> None:
+        if not self._dirty_chat_states:
+            return
+        flushed = 0
+        for chat_id in list(self._dirty_chat_states):
+            last_seen = self._chat_last_seen.get(chat_id, 0)
+            if last_seen <= 0:
+                self._dirty_chat_states.discard(chat_id)
+                continue
+            try:
+                await self.repository.upsert_chat_read_state(chat_id, last_seen)
+                self._dirty_chat_states.discard(chat_id)
+                flushed += 1
+            except Exception:
+                logger.exception("chat_read_state_flush_failed", extra={"chat_id": chat_id})
+        if flushed:
+            logger.info("chat_read_state_flushed", extra={"action": "state_flush", "count": flushed})
 
     async def _process_message(self, msg: NormalizedMessage) -> None:
         decision = self.decision_engine.decide(msg)
@@ -140,6 +344,15 @@ class TelegramUserbot:
                 },
             )
             return
+        logger.info(
+            "decision_forward",
+            extra={
+                "chat_id": msg.envelope.chat_id,
+                "message_id": msg.envelope.message_id,
+                "decision": "forward",
+                "reason": decision.reason,
+            },
+        )
         await self.executor.execute(msg, decision)
 
     async def _discover_private_invites(self, raw_text: str, source_chat_id: int) -> None:
@@ -234,6 +447,21 @@ class TelegramUserbot:
             file_name = getattr(file_obj, "name", None)
             if file_name:
                 return file_name
+        return ""
+
+    @staticmethod
+    def _extract_text_from_message(message: object) -> str:
+        text = getattr(message, "message", None)
+        if text:
+            return str(text)
+        file_obj = getattr(message, "file", None)
+        if file_obj is not None:
+            file_emoji = getattr(file_obj, "emoji", None)
+            if file_emoji:
+                return str(file_emoji)
+            file_name = getattr(file_obj, "name", None)
+            if file_name:
+                return str(file_name)
         return ""
 
 
