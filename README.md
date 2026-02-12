@@ -74,6 +74,15 @@ python -m app.main
 
 Birinchi ishga tushishda Telethon session avtorizatsiyasi so'raladi (SMS/login kod).
 
+Docker orqali
+```bash
+docker run --rm -it \
+  --name user_bot_login \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  user_bot
+```
+
 ### 4) Docker deployment
 
 ```bash
