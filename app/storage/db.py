@@ -1,12 +1,37 @@
 from __future__ import annotations
 
+import logging
+import re
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 
 KEYWORD_KINDS: tuple[str, ...] = ("transport", "request", "offer", "exclude", "location", "route")
+_SAFE_DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+logger = logging.getLogger(__name__)
+
+
+def _extract_database_name_from_dsn(dsn: str) -> str | None:
+    parsed = urlsplit(dsn)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = (parsed.path or "").lstrip("/")
+    if not path:
+        return None
+    # Postgres URL paths are usually "/<database>".
+    return path.split("/", 1)[0] or None
+
+
+def _replace_database_name_in_dsn(dsn: str, db_name: str) -> str:
+    parsed = urlsplit(dsn)
+    return urlunsplit((parsed.scheme, parsed.netloc, f"/{db_name}", parsed.query, parsed.fragment))
+
+
+def _is_safe_database_name(db_name: str) -> bool:
+    return bool(_SAFE_DB_NAME_RE.fullmatch(db_name))
 
 
 class Postgres:
@@ -15,7 +40,13 @@ class Postgres:
         self.pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
-        self.pool = await asyncpg.create_pool(dsn=self.dsn, min_size=1, max_size=4)
+        try:
+            self.pool = await asyncpg.create_pool(dsn=self.dsn, min_size=1, max_size=4)
+        except asyncpg.InvalidCatalogNameError:
+            created = await self._create_database_if_missing()
+            if not created:
+                raise
+            self.pool = await asyncpg.create_pool(dsn=self.dsn, min_size=1, max_size=4)
 
     async def close(self) -> None:
         if self.pool:
@@ -27,6 +58,29 @@ class Postgres:
         sql = Path("app/storage/schema.sql").read_text(encoding="utf-8")
         async with self.pool.acquire() as conn:
             await conn.execute(sql)
+
+    async def _create_database_if_missing(self) -> bool:
+        db_name = _extract_database_name_from_dsn(self.dsn)
+        if not db_name:
+            return False
+        if db_name.lower() in {"postgres", "template0", "template1"}:
+            return False
+        if not _is_safe_database_name(db_name):
+            logger.warning("database_name_unsafe_skip_autocreate", extra={"database": db_name})
+            return False
+
+        admin_dsn = _replace_database_name_in_dsn(self.dsn, "postgres")
+        conn = await asyncpg.connect(dsn=admin_dsn)
+        try:
+            exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", db_name)
+            if exists:
+                return True
+            quoted = db_name.replace('"', '""')
+            await conn.execute(f'CREATE DATABASE "{quoted}"')
+            logger.info("database_auto_created", extra={"database": db_name})
+            return True
+        finally:
+            await conn.close()
 
 
 @dataclass(slots=True)

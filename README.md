@@ -24,6 +24,17 @@ Tavsiya etiladi:
 - `OWNER_USER_ID`
 - `ADMIN_WEB_TOKEN`
 
+DB eslatma:
+
+- Agar `DATABASE_URL` ichidagi DB mavjud bo'lmasa, bot uni avtomatik yaratishga urinadi.
+- Bu ishlashi uchun DB user'da `CREATEDB` huquqi bo'lishi kerak.
+- Huquq bo'lmasa DB'ni oldindan qo'lda yarating.
+
+Docker Compose ishlatayotganda host nomlari:
+
+- `DATABASE_URL=postgresql://postgres:postgres@postgres:5432/userbot`
+- `REDIS_URL=redis://redis:6379/0`
+
 Nusxa olish:
 
 Linux/macOS:
@@ -103,7 +114,23 @@ Web UI orqali:
 /kw del <kind> <value>
 ```
 
-### 3) Telegram userbot ishlash tartibi
+### 3) Forward target (qayerga yuborish)
+
+Public guruh/channel:
+
+- `FORWARD_TARGET=@group_username`
+
+Private guruh:
+
+- `FORWARD_TARGET=-1001234567890` formatida bering.
+- Userbot account o'sha private guruhda a'zo bo'lishi va yozish huquqiga ega bo'lishi kerak.
+
+Private guruh `id` ni olish:
+
+1. Guruhdan biror message linkini oling: `https://t.me/c/1234567890/55`
+2. `FORWARD_TARGET=-1001234567890` qilib yozing (`c/` dan keyingi son boshiga `-100` qo'shiladi).
+
+### 4) Telegram userbot ishlash tartibi
 
 1. Guruhlardan kelgan xabarlar olinadi.
 2. Matn normalize qilinadi (emoji/shovqin belgilar tozalanadi, krill-lotin moslashtiriladi).
@@ -117,7 +144,7 @@ Web UI orqali:
 - hudud hashtag
 - source link (`Manba`)
 
-### 4) Guruh topish va qo'shilish
+### 5) Guruh topish va qo'shilish
 
 Private:
 
