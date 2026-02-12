@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import random
+import re
 
 from telethon import TelegramClient, functions
 
@@ -72,7 +73,8 @@ class ActionExecutor:
             source_link=source_link,
             region_tag=decision.region_tag,
         )
-        await self.client.send_message(entity=forward_target, message=outbound, link_preview=False)
+        target_entity = self._resolve_forward_target(forward_target)
+        await self.client.send_message(entity=target_entity, message=outbound, link_preview=False)
         await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish", "ok")
 
         if decision.should_reply and decision.reply_text:
@@ -135,6 +137,15 @@ class ActionExecutor:
         if runtime:
             return runtime.min_human_delay_sec, runtime.max_human_delay_sec
         return self.settings.min_human_delay_sec, self.settings.max_human_delay_sec
+
+    @staticmethod
+    def _resolve_forward_target(target: str | int) -> str | int:
+        if isinstance(target, int):
+            return target
+        value = str(target).strip()
+        if re.fullmatch(r"-?\d+", value):
+            return int(value)
+        return value
 
     def _build_source_link(self, msg: NormalizedMessage) -> str:
         username = (msg.envelope.chat_username or "").strip().lstrip("@")

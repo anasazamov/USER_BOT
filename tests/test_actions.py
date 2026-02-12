@@ -21,3 +21,10 @@ def test_publish_message_fallback_source() -> None:
     assert "#Uzbekiston" in message
     assert "Manba: private chat" in message
 
+
+def test_resolve_forward_target_numeric_chat_id() -> None:
+    assert ActionExecutor._resolve_forward_target("-1001234567890") == -1001234567890
+
+
+def test_resolve_forward_target_username() -> None:
+    assert ActionExecutor._resolve_forward_target("@taxi_orders_uz") == "@taxi_orders_uz"
