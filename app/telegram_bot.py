@@ -96,6 +96,7 @@ class TelegramUserbot:
         if self._owner_user_id is None:
             me = await self.client.get_me()
             self._owner_user_id = int(me.id)
+        await self._log_joined_groups_snapshot()
         await self._load_chat_read_states()
         history_enabled = self.settings.history_sync_enabled and not self.settings.realtime_only
         if history_enabled:
@@ -112,6 +113,24 @@ class TelegramUserbot:
             )
         logger.info("userbot_started")
         await self.client.run_until_disconnected()
+
+    async def _log_joined_groups_snapshot(self) -> None:
+        try:
+            dialogs = await self.client.get_dialogs()
+            summary = self._summarize_dialogs(dialogs)
+            logger.info(
+                "joined_groups_snapshot",
+                extra={
+                    "action": "startup_state",
+                    "count": summary["monitored_chats"],
+                    "reason": (
+                        f"dialogs={summary['total']} groups={summary['groups']} "
+                        f"channels={summary['channels']} private={summary['private']}"
+                    ),
+                },
+            )
+        except Exception:
+            logger.exception("joined_groups_snapshot_failed")
 
     async def shutdown(self) -> None:
         self._history_stop.set()
@@ -345,6 +364,23 @@ class TelegramUserbot:
         if latest_id > 0:
             return latest_id
         return int(getattr(dialog, "top_message", 0) or 0)
+
+    @staticmethod
+    def _summarize_dialogs(dialogs: list[object]) -> dict[str, int]:
+        summary = {"total": len(dialogs), "groups": 0, "channels": 0, "private": 0, "monitored_chats": 0}
+        for dialog in dialogs:
+            is_group = bool(getattr(dialog, "is_group", False))
+            is_channel = bool(getattr(dialog, "is_channel", False))
+            if is_group:
+                summary["groups"] += 1
+                summary["monitored_chats"] += 1
+                continue
+            if is_channel:
+                summary["channels"] += 1
+                summary["monitored_chats"] += 1
+                continue
+            summary["private"] += 1
+        return summary
 
     async def _load_chat_read_states(self) -> None:
         try:

@@ -12,6 +12,12 @@ class _Dialog:
         self.top_message = top_message
 
 
+class _DialogType:
+    def __init__(self, is_group: bool, is_channel: bool) -> None:
+        self.is_group = is_group
+        self.is_channel = is_channel
+
+
 def test_dialog_latest_message_id_prefers_message_object() -> None:
     dialog = _Dialog(message_id=345, top_message=777)
     assert TelegramUserbot._dialog_latest_message_id(dialog) == 345
@@ -40,3 +46,17 @@ def test_build_message_log_context_contains_group_and_preview() -> None:
     assert context["chat_username"] == "@my_group"
     assert "raw_preview" in context
     assert "normalized_preview" in context
+
+
+def test_summarize_dialogs_counts_monitored_chats() -> None:
+    dialogs = [
+        _DialogType(is_group=True, is_channel=False),
+        _DialogType(is_group=False, is_channel=True),
+        _DialogType(is_group=False, is_channel=False),
+    ]
+    summary = TelegramUserbot._summarize_dialogs(dialogs)
+    assert summary["total"] == 3
+    assert summary["groups"] == 1
+    assert summary["channels"] == 1
+    assert summary["private"] == 1
+    assert summary["monitored_chats"] == 2
