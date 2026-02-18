@@ -36,6 +36,19 @@ async def main() -> None:
     await keyword_service.initialize()
     runtime_config = RuntimeConfigService(settings, repository)
     await runtime_config.initialize()
+    runtime = runtime_config.snapshot()
+    logger.info(
+        "runtime_config_effective",
+        extra={
+            "action": "runtime_config",
+            "reason": (
+                f"discovery_enabled={runtime.discovery_enabled} "
+                f"join_limit_day={runtime.join_limit_day} "
+                f"query_limit={runtime.discovery_query_limit} "
+                f"join_batch={runtime.discovery_join_batch}"
+            ),
+        },
+    )
     seeded_public, seeded_private = await seed_priority_groups(repository, settings.priority_group_links)
     if seeded_public or seeded_private:
         logger.info(

@@ -68,7 +68,18 @@ class GroupDiscoveryManager:
             try:
                 runtime = self.runtime_config.snapshot() if self.runtime_config else None
                 if runtime and not runtime.discovery_enabled:
-                    logger.info("group_discovery_skipped", extra={"action": "discovery", "reason": "disabled"})
+                    logger.info(
+                        "group_discovery_skipped",
+                        extra={
+                            "action": "discovery",
+                            "reason": (
+                                "disabled "
+                                f"(runtime.discovery_enabled={runtime.discovery_enabled}, "
+                                f"query_limit={runtime.discovery_query_limit}, "
+                                f"join_batch={runtime.discovery_join_batch})"
+                            ),
+                        },
+                    )
                     await asyncio.sleep(self.interval_sec)
                     continue
 
