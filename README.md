@@ -161,6 +161,7 @@ Private guruh `id` ni olish:
 3. Fast filter order bo'lish ehtimolini tekshiradi.
 4. Decision engine yakuniy qaror beradi:
 - kuchli buyurtma patternlari (`...dan ...ga`, `1 kishi/odam bor`, `kim bor`) bo'lsa qabul qiladi
+- yo'nalish bo'lmasa ham qisqa `odam bor` / `kishi bor` xabarlari qabul qilinadi
 - matnda `yuramiz`/`yuryamiz` bo'lsa buyurtma deb olinmaydi (taklif sifatida rad qilinadi)
 - taksi takliflari rad etiladi
 - spam/ads kategoriyalar chiqarib tashlanadi

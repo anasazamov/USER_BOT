@@ -103,3 +103,10 @@ def test_decision_accepts_route_with_bor_odam_phrase() -> None:
     decision = engine.decide(_msg("samarqanddan toshkentga bor odam +998901234567"))
     assert decision.should_forward is True
     assert decision.reason == "taxi_order"
+
+
+def test_decision_accepts_short_bor_odam_without_route() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=18))
+    decision = engine.decide(_msg("odam bor"))
+    assert decision.should_forward is True
+    assert decision.reason == "taxi_order"

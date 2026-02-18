@@ -55,6 +55,10 @@ class FastFilter:
             r"\b(?:bor|bot)\s+(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\b"
             r"|\b(?:odam|kishi|passajir)\s+bor\b"
         )
+        self.short_order_pattern = re.compile(
+            r"\b(?:bor|bot|kerak)\s+(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\b"
+            r"|\b(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\s+(?:bor|bot|kerak)\b"
+        )
         self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
         self.route_request_pattern = re.compile(
             r"\b[a-z0-9]{3,}dan\b.*\b(?:yuradigan|ketadigan)\s+kim\s+bor\b"
@@ -86,10 +90,12 @@ class FastFilter:
             return FastFilterResult(False, "empty_text", 0)
 
         tokens = tokenize(normalized_text)
+        has_short_order = bool(self.short_order_pattern.search(normalized_text))
         if (
             len(normalized_text) < min_length
             and not self.route_pattern.search(normalized_text)
             and not self.suffix_route_pattern.search(normalized_text)
+            and not has_short_order
         ):
             return FastFilterResult(False, "too_short", 0)
 
@@ -118,6 +124,7 @@ class FastFilter:
             (has_route and (has_passenger_announcement or has_bor_people))
             or has_route_request
             or (has_route and has_request_phrase and has_people)
+            or has_short_order
         )
 
         offer_dominant = (

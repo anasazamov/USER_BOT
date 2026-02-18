@@ -85,3 +85,9 @@ def test_fast_filter_accepts_route_with_bor_odam_phrase() -> None:
     engine = FastFilter(min_length=10)
     result = engine.evaluate(normalize_text("samarqanddan toshkentga bor odam +998901234567"))
     assert result.passed is True
+
+
+def test_fast_filter_accepts_short_bor_odam_without_route() -> None:
+    engine = FastFilter(min_length=18)
+    result = engine.evaluate(normalize_text("odam bor"))
+    assert result.passed is True

@@ -57,6 +57,10 @@ class DecisionEngine:
             r"\b(?:bor|bot)\s+(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\b"
             r"|\b(?:odam|kishi|passajir)\s+bor\b"
         )
+        self.short_order_pattern = re.compile(
+            r"\b(?:bor|bot|kerak)\s+(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\b"
+            r"|\b(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\s+(?:bor|bot|kerak)\b"
+        )
         self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
         self.route_request_pattern = re.compile(
             r"\b[a-z0-9]{3,}dan\b.*\b(?:yuradigan|ketadigan)\s+kim\s+bor\b"
@@ -90,8 +94,13 @@ class DecisionEngine:
         if not text:
             return Decision(False, False, reason="empty_text")
 
+        has_short_order = bool(self.short_order_pattern.search(text))
         if len(text) < min_length:
-            if not self.route_pattern.search(text) and not self.suffix_route_pattern.search(text):
+            if (
+                not self.route_pattern.search(text)
+                and not self.suffix_route_pattern.search(text)
+                and not has_short_order
+            ):
                 return Decision(False, False, reason="too_short")
 
         tokens = tokenize(text)
@@ -122,6 +131,7 @@ class DecisionEngine:
             (has_route and (has_passenger_announcement or has_bor_people))
             or has_route_request
             or (has_route and has_request_phrase and has_people)
+            or has_short_order
         )
 
         if has_exclude:
