@@ -51,3 +51,24 @@ def test_fast_filter_rejects_driver_offer_with_people_needed() -> None:
     result = engine.evaluate(text)
     assert result.passed is False
     assert result.reason == "likely_taxi_offer"
+
+
+def test_fast_filter_accepts_passenger_style_route_orders() -> None:
+    engine = FastFilter(min_length=10)
+    samples = [
+        "Shahardan jartepaga 1kishi bor +998121234567",
+        "Jartepadan shaxarga 1 kishi bor +99812365478",
+        "Shaxardan jartepaga 1 ta odam bor",
+        "991234567 Shahardan jartepaga 1 kishi bot",
+        "Ertalab 6 ga jartepadan Shaharga 2 kishi bor +998561234567",
+        "Ertaga ertalabga 7:30 da marhobodan jartepaga bir kishi bor",
+    ]
+    for raw in samples:
+        result = engine.evaluate(normalize_text(raw))
+        assert result.passed is True, raw
+
+
+def test_fast_filter_accepts_route_request_with_pochta() -> None:
+    engine = FastFilter(min_length=10)
+    result = engine.evaluate(normalize_text("Shahardan yuradigan kim bor pochta bor"))
+    assert result.passed is True

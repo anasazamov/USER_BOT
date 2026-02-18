@@ -48,7 +48,15 @@ class DecisionEngine:
         )
         self.suffix_route_pattern = re.compile(r"\b[a-z0-9]{3,}dan\b.*\b[a-z0-9]{2,}ga\b")
         self.people_pattern = re.compile(r"\b\d+\s*(odam|kishi|passajir|joy)\b")
+        self.passenger_announcement_pattern = re.compile(
+            r"\b(?:\d+\s*(?:ta\s*)?(?:odam|kishi|passajir)|"
+            r"bir\s+kishi|ikki\s+kishi|uch\s+kishi|tort\s+kishi|besh\s+kishi|olti\s+kishi|"
+            r"yetti\s+kishi|sakkiz\s+kishi|toqqiz\s+kishi|on\s+kishi)\s+(?:bor|bot|kerak)\b"
+        )
         self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
+        self.route_request_pattern = re.compile(
+            r"\b[a-z0-9]{3,}dan\b.*\b(?:yuradigan|ketadigan)\s+kim\s+bor\b"
+        )
         self.request_phrase_pattern = re.compile(
             r"\b(?:taxi|taksi|moshin|mashina)\s+kerak\b"
             r"|\b(?:yuradigan|yuradiglar)\s+bormi(?:kan)?\b"
@@ -58,13 +66,12 @@ class DecisionEngine:
         self.offer_context_pattern = re.compile(
             r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
             r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
-            r"joy\s+bor|bagaj|pochta|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
         )
         self.vehicle_model_pattern = re.compile(
             r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
         )
 
-        # Contact is mandatory to pass final decision.
         self.phone_pattern = re.compile(r"(?<!\d)(?:\+?998)?[\s\-()]*(?:\d[\s\-()]*){7,12}(?!\d)")
         self.username_pattern = re.compile(r"(?<!\w)@[A-Za-z][A-Za-z0-9_]{4,}")
 
@@ -98,16 +105,23 @@ class DecisionEngine:
         )
         has_exclude = bool(self.exclude_pattern.search(text))
         has_people = bool(self.people_pattern.search(text))
+        has_passenger_announcement = bool(self.passenger_announcement_pattern.search(text))
         has_passenger_needed = bool(self.passenger_needed_pattern.search(text))
+        has_route_request = bool(self.route_request_pattern.search(text))
 
         has_phone = bool(self.phone_pattern.search(raw_text)) or bool(self.phone_pattern.search(text))
         has_username = bool(self.username_pattern.search(raw_text))
         has_contact = has_phone or has_username
+        has_order_announcement = (
+            (has_route and has_passenger_announcement)
+            or has_route_request
+            or (has_route and has_request_phrase and has_people)
+        )
 
         if has_exclude:
             return Decision(False, False, reason="excluded_category")
 
-        if not has_contact:
+        if not has_contact and not has_order_announcement:
             return Decision(False, False, reason="no_contact")
 
         # Offer messages are ignored unless there is explicit request phrase.
@@ -131,20 +145,27 @@ class DecisionEngine:
             score += 1
         if has_route:
             score += 2
+        if has_order_announcement:
+            score += 2
         if has_location:
             score += 1
         if has_people:
             score += 1
         if has_contact:
-            score += 2
+            score += 1
 
-        order_signal = has_request_phrase or has_request or (has_transport and has_route)
-        if score >= 5 and order_signal and not offer_dominant:
-            reply = "Buyurtma qabul qilindi."
+        order_signal = has_request_phrase or has_request or has_order_announcement or (has_transport and has_route)
+        if has_order_announcement and not offer_dominant:
             return Decision(
                 True,
+                False,
+                reason="taxi_order",
+                region_tag=region_match.hashtag if region_match else "#Uzbekiston",
+            )
+        if score >= 5 and order_signal and not offer_dominant:
+            return Decision(
                 True,
-                reply_text=reply,
+                False,
                 reason="taxi_order",
                 region_tag=region_match.hashtag if region_match else "#Uzbekiston",
             )

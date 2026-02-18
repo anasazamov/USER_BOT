@@ -46,7 +46,15 @@ class FastFilter:
         )
         self.suffix_route_pattern = re.compile(r"\b[a-z0-9]{3,}dan\b.*\b[a-z0-9]{2,}ga\b")
         self.people_pattern = re.compile(r"\b\d+\s*(odam|kishi|passajir|joy)\b")
+        self.passenger_announcement_pattern = re.compile(
+            r"\b(?:\d+\s*(?:ta\s*)?(?:odam|kishi|passajir)|"
+            r"bir\s+kishi|ikki\s+kishi|uch\s+kishi|tort\s+kishi|besh\s+kishi|olti\s+kishi|"
+            r"yetti\s+kishi|sakkiz\s+kishi|toqqiz\s+kishi|on\s+kishi)\s+(?:bor|bot|kerak)\b"
+        )
         self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
+        self.route_request_pattern = re.compile(
+            r"\b[a-z0-9]{3,}dan\b.*\b(?:yuradigan|ketadigan)\s+kim\s+bor\b"
+        )
         self.request_phrase_pattern = re.compile(
             r"\b(?:taxi|taksi|moshin|mashina)\s+kerak\b"
             r"|\b(?:yuradigan|yuradiglar)\s+bormi(?:kan)?\b"
@@ -56,7 +64,7 @@ class FastFilter:
         self.offer_context_pattern = re.compile(
             r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
             r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
-            r"joy\s+bor|bagaj|pochta|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
         )
         self.vehicle_model_pattern = re.compile(
             r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
@@ -92,12 +100,19 @@ class FastFilter:
         route_hits = self._count_exact_hits(tokens, self.route_tokens)
         has_route = bool(self.route_pattern.search(normalized_text)) or bool(self.suffix_route_pattern.search(normalized_text))
         has_people = bool(self.people_pattern.search(normalized_text))
+        has_passenger_announcement = bool(self.passenger_announcement_pattern.search(normalized_text))
         has_passenger_needed = bool(self.passenger_needed_pattern.search(normalized_text))
+        has_route_request = bool(self.route_request_pattern.search(normalized_text))
         has_request_phrase = bool(self.request_phrase_pattern.search(normalized_text))
         has_offer_context = bool(self.offer_context_pattern.search(normalized_text))
         has_vehicle_model = bool(self.vehicle_model_pattern.search(normalized_text))
         has_phone = bool(self.phone_pattern.search(normalized_text))
         has_region = self.geo.detect_region(normalized_text) is not None
+        has_order_announcement = (
+            (has_route and has_passenger_announcement)
+            or has_route_request
+            or (has_route and has_request_phrase and has_people)
+        )
 
         offer_dominant = (
             has_offer_context
@@ -119,6 +134,8 @@ class FastFilter:
             score += 1
         if has_route or route_hits >= 1:
             score += 2
+        if has_order_announcement:
+            score += 2
         if location_hits or has_region:
             score += 1
         if has_people:
@@ -126,7 +143,9 @@ class FastFilter:
         if has_phone:
             score += 1
 
-        request_signal = has_request_phrase or request_hits > 0
+        request_signal = has_request_phrase or request_hits > 0 or has_order_announcement
+        if has_order_announcement and not offer_dominant:
+            return FastFilterResult(True, "candidate_order", score)
         if score >= 4 and request_signal and not offer_dominant:
             return FastFilterResult(True, "candidate_order", score)
         if (

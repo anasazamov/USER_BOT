@@ -61,15 +61,91 @@ _CYRILLIC_TO_LATIN = str.maketrans(
     }
 )
 
+_CONFUSABLE_TO_ASCII: dict[str, str] = {
+    "\u1d00": "a",  # ᴀ
+    "\u0299": "b",  # ʙ
+    "\u1d04": "c",  # ᴄ
+    "\u1d05": "d",  # ᴅ
+    "\u1d07": "e",  # ᴇ
+    "\ua730": "f",  # ꜰ
+    "\u0262": "g",  # ɢ
+    "\u029c": "h",  # ʜ
+    "\u026a": "i",  # ɪ
+    "\u1d0a": "j",  # ᴊ
+    "\u1d0b": "k",  # ᴋ
+    "\u029f": "l",  # ʟ
+    "\u1d0d": "m",  # ᴍ
+    "\u0274": "n",  # ɴ
+    "\u1d0f": "o",  # ᴏ
+    "\u1d18": "p",  # ᴘ
+    "\u01eb": "q",  # ǫ
+    "\u0280": "r",  # ʀ
+    "\ua731": "s",  # ꜱ
+    "\u1d1b": "t",  # ᴛ
+    "\u1d1c": "u",  # ᴜ
+    "\u1d20": "v",  # ᴠ
+    "\u1d21": "w",  # ᴡ
+    "\u028f": "y",  # ʏ
+    "\u1d22": "z",  # ᴢ
+    "\u0251": "a",  # ɑ
+    "\u0250": "a",  # ɐ
+    "\u0252": "o",  # ɒ
+    "\u0259": "e",  # ə
+    "\u025b": "e",  # ɛ
+    "\u025c": "e",  # ɜ
+    "\u0261": "g",  # ɡ
+    "\u0268": "i",  # ɨ
+    "\u0142": "l",  # ł
+    "\u019a": "l",  # ƚ
+    "\u026f": "m",  # ɯ
+    "\u0272": "n",  # ɲ
+    "\u014b": "n",  # ŋ
+    "\u0254": "o",  # ɔ
+    "\u03b1": "a",  # α
+    "\u03b2": "b",  # β
+    "\u03b5": "e",  # ε
+    "\u03b9": "i",  # ι
+    "\u03ba": "k",  # κ
+    "\u03bc": "m",  # μ
+    "\u03bd": "v",  # ν
+    "\u03bf": "o",  # ο
+    "\u03c1": "r",  # ρ
+    "\u03c4": "t",  # τ
+    "\u03c5": "y",  # υ
+    "\u03c7": "x",  # χ
+    "\u0455": "s",  # ѕ
+    "\u0456": "i",  # і
+    "\u0458": "j",  # ј
+    "\u04cf": "l",  # ӏ
+    "\u0501": "d",  # ԁ
+    "\u00e6": "ae",  # æ
+    "\u0153": "oe",  # œ
+}
+
 _APOSTROPHE_RE = re.compile(r"[\u0060\u00b4\u0027\u2019\u02bb\u02bc\u02b9]")
+_INVISIBLE_RE = re.compile(
+    r"[\u00ad\u034f\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+)
 _NOISE_CHARS_RE = re.compile(r"[^a-z0-9\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
 _REPEATED_CHAR_RE = re.compile(r"([a-z])\1{2,}")
 
 
+def _fold_confusables(text: str) -> str:
+    return "".join(_CONFUSABLE_TO_ASCII.get(char, char) for char in text)
+
+
+def _strip_diacritics(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
 def normalize_text(text: str) -> str:
     # NFKC helps collapse full-width and stylized glyphs into canonical forms.
     normalized = unicodedata.normalize("NFKC", text).lower()
+    normalized = _INVISIBLE_RE.sub("", normalized)
+    normalized = _fold_confusables(normalized)
+    normalized = _strip_diacritics(normalized)
     normalized = _APOSTROPHE_RE.sub("", normalized)
     normalized = normalized.translate(_CYRILLIC_TO_LATIN)
     normalized = _EMOJI_RE.sub(" ", normalized)

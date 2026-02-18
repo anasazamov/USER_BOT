@@ -14,15 +14,17 @@ def test_decision_accepts_order_with_phone_contact() -> None:
     engine = DecisionEngine(RuleConfig(min_length=10))
     decision = engine.decide(_msg("Toshkentdan Samarqandga taxi kerak +998901234567"))
     assert decision.should_forward is True
+    assert decision.should_reply is False
     assert decision.reason == "taxi_order"
     assert decision.region_tag is not None
 
 
-def test_decision_rejects_order_without_contact() -> None:
+def test_decision_accepts_clear_order_without_contact() -> None:
     engine = DecisionEngine(RuleConfig(min_length=10))
     decision = engine.decide(_msg("toshkentdan andijonga taxi kerak 2 odam"))
-    assert decision.should_forward is False
-    assert decision.reason == "no_contact"
+    assert decision.should_forward is True
+    assert decision.should_reply is False
+    assert decision.reason == "taxi_order"
 
 
 def test_decision_rejects_taxi_offer_even_with_contact() -> None:
@@ -71,3 +73,19 @@ def test_decision_rejects_service_offer_message() -> None:
     decision = engine.decide(_msg(raw))
     assert decision.should_forward is False
     assert decision.reason == "taxi_offer"
+
+
+def test_decision_accepts_passenger_style_order_without_contact() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=10))
+    decision = engine.decide(_msg("Shaxardan jartepaga 1 ta odam bor"))
+    assert decision.should_forward is True
+    assert decision.should_reply is False
+    assert decision.reason == "taxi_order"
+
+
+def test_decision_accepts_route_request_with_pochta() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=10))
+    decision = engine.decide(_msg("Shahardan yuradigan kim bor pochta bor"))
+    assert decision.should_forward is True
+    assert decision.should_reply is False
+    assert decision.reason == "taxi_order"

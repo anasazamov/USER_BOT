@@ -158,14 +158,19 @@ Private guruh `id` ni olish:
 2. Matn normalize qilinadi (emoji/shovqin belgilar tozalanadi, krill-lotin moslashtiriladi).
 3. Fast filter order bo'lish ehtimolini tekshiradi.
 4. Decision engine yakuniy qaror beradi:
-- kontakt (`telefon` yoki `@username`) bo'lishi shart
+- kuchli buyurtma patternlari (`...dan ...ga`, `1 kishi/odam bor`, `kim bor`) bo'lsa qabul qiladi
 - taksi takliflari rad etiladi
 - spam/ads kategoriyalar chiqarib tashlanadi
 5. Mos xabar forward qilinadi:
 - original matn
 - hudud hashtag
+- `Status: Yangi`
 - source link (`Manba`)
-6. History sync yoqilgan bo'lsa:
+6. Agar shu bir xil buyurtma xabari qayta ishlansa (masalan edit bo'lsa):
+- yangi post ochilmaydi
+- oldingi e'lon `Status: Yangilandi` qilib update qilinadi
+7. Bot manba (buyurtma topilgan) guruhlarga reply yozmaydi
+8. History sync yoqilgan bo'lsa:
 - startupda guruhlar tarixidan yangi xabarlar o'qiladi
 - interval bo'yicha qayta scan bo'ladi
 - yangi qo'shilgan guruhlar ham keyingi sync'da tarix bilan birga o'qiladi
@@ -185,7 +190,7 @@ Public:
 ## Logging
 
 - Loglar JSON formatda chiqadi (`stdout`).
-- Harakatlar bo'yicha loglar bor: message receive/filter/queue, decision, publish/reply/join, history sync.
+- Harakatlar bo'yicha loglar bor: message receive/filter/queue, decision, publish/publish_edit/join, history sync.
 - Dockerda ko'rish:
 
 ```bash

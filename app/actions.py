@@ -30,6 +30,7 @@ class ActionExecutor:
         self.cooldown = cooldown
         self.repository = repository
         self.runtime_config = runtime_config
+        self._published_order_map: dict[tuple[int, int], tuple[str | int, int]] = {}
 
     async def execute(self, msg: NormalizedMessage, decision: Decision) -> None:
         if not decision.should_forward:
@@ -41,9 +42,6 @@ class ActionExecutor:
         )
         global_actions_minute = (
             runtime.global_actions_minute if runtime else self.settings.global_actions_minute
-        )
-        per_group_replies_10m = (
-            runtime.per_group_replies_10m if runtime else self.settings.per_group_replies_10m
         )
         forward_target = runtime.forward_target if runtime else self.settings.forward_target
 
@@ -68,11 +66,60 @@ class ActionExecutor:
 
         await self._human_pause()
         source_link = self._build_source_link(msg)
+        publish_key = (msg.envelope.chat_id, msg.envelope.message_id)
+        existing_publish = self._published_order_map.get(publish_key)
+        status_label = "Yangilandi" if existing_publish else "Yangi"
         outbound = self.format_publish_message(
             raw_text=msg.envelope.raw_text,
             source_link=source_link,
             region_tag=decision.region_tag,
+            status_label=status_label,
         )
+        if existing_publish:
+            target_entity, target_message_id = existing_publish
+            try:
+                logger.info(
+                    "publish_edit_attempt",
+                    extra={
+                        "action": "publish_edit_attempt",
+                        "chat_id": chat_id,
+                        "message_id": msg.envelope.message_id,
+                        "target": str(target_entity),
+                        "target_message_id": target_message_id,
+                    },
+                )
+                await self.client.edit_message(
+                    entity=target_entity,
+                    message=target_message_id,
+                    text=outbound,
+                    link_preview=False,
+                )
+                logger.info(
+                    "publish_edit_ok",
+                    extra={
+                        "action": "publish_edit",
+                        "chat_id": chat_id,
+                        "message_id": msg.envelope.message_id,
+                        "target": str(target_entity),
+                        "target_message_id": target_message_id,
+                        "status": "ok",
+                    },
+                )
+                await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish_edit", "ok")
+                return
+            except Exception:
+                logger.exception(
+                    "publish_edit_failed",
+                    extra={
+                        "chat_id": chat_id,
+                        "message_id": msg.envelope.message_id,
+                        "target": str(target_entity),
+                        "target_message_id": target_message_id,
+                    },
+                )
+                await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish_edit", "error")
+                self._published_order_map.pop(publish_key, None)
+
         target_entity = self._resolve_forward_target(forward_target)
         logger.info(
             "publish_attempt",
@@ -83,7 +130,12 @@ class ActionExecutor:
                 "target": str(target_entity),
             },
         )
-        await self.client.send_message(entity=target_entity, message=outbound, link_preview=False)
+        sent_message = await self.client.send_message(entity=target_entity, message=outbound, link_preview=False)
+        sent_message_id = int(getattr(sent_message, "id", 0) or 0)
+        if sent_message_id > 0:
+            if len(self._published_order_map) >= 10_000:
+                self._published_order_map.pop(next(iter(self._published_order_map)))
+            self._published_order_map[publish_key] = (target_entity, sent_message_id)
         logger.info(
             "publish_ok",
             extra={
@@ -95,31 +147,6 @@ class ActionExecutor:
             },
         )
         await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish", "ok")
-
-        if decision.should_reply and decision.reply_text:
-            can_reply = await self.cooldown.allow_action(
-                chat_id,
-                "reply",
-                per_group_replies_10m,
-                600,
-            )
-            if can_reply:
-                await self._simulate_typing(chat_id)
-                logger.info(
-                    "reply_attempt",
-                    extra={"action": "reply_attempt", "chat_id": chat_id, "message_id": msg.envelope.message_id},
-                )
-                await self.client.send_message(entity=chat_id, message=decision.reply_text)
-                logger.info(
-                    "reply_ok",
-                    extra={
-                        "action": "reply",
-                        "chat_id": chat_id,
-                        "message_id": msg.envelope.message_id,
-                        "status": "ok",
-                    },
-                )
-                await self.repository.insert_action(chat_id, msg.envelope.message_id, "reply", "ok")
 
     async def try_join(self, invite_link: str) -> bool:
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
@@ -200,13 +227,19 @@ class ActionExecutor:
         return ""
 
     @staticmethod
-    def format_publish_message(raw_text: str, source_link: str, region_tag: str | None) -> str:
+    def format_publish_message(
+        raw_text: str,
+        source_link: str,
+        region_tag: str | None,
+        status_label: str = "Yangi",
+    ) -> str:
         region = region_tag or "#Uzbekiston"
         body = (raw_text or "").strip() or "(matn topilmadi)"
         lines = [
             "Taxi buyurtma:",
             body,
             region,
+            f"Status: {status_label}",
         ]
         if source_link:
             lines.append(f"Manba: {source_link}")
@@ -217,8 +250,8 @@ class ActionExecutor:
         if len(message) <= 3900:
             return message
 
-        # Keep room for region + source lines inside Telegram limits.
-        tail = f"\n\n{region}\n\nManba: {source_link or 'private chat'}"
+        # Keep room for region + status + source lines inside Telegram limits.
+        tail = f"\n\n{region}\n\nStatus: {status_label}\n\nManba: {source_link or 'private chat'}"
         head_limit = max(120, 3900 - len(tail) - 24)
         compact_body = (body[:head_limit] + "...") if len(body) > head_limit else body
         return f"Taxi buyurtma:\n\n{compact_body}{tail}"

@@ -20,3 +20,18 @@ def test_normalize_handles_cyrillic_and_stylized_text() -> None:
     assert "taxi" in normalized
     assert "kerak" in normalized
     assert "toshkentdan" in normalized
+
+
+def test_normalize_handles_confusable_smallcaps_and_mixed_scripts() -> None:
+    text = "\u1d1b\u1d00x\u026a \u043a\u0435r\u0430k"
+    assert normalize_text(text) == "taxi kerak"
+
+
+def test_normalize_removes_invisible_chars_and_diacritics() -> None:
+    text = "ta\u200bxi ke\u200dr\u200bak t\u00f6shk\u00ebntdan"
+    assert normalize_text(text) == "taxi kerak toshkentdan"
+
+
+def test_normalize_handles_confusable_greek_letters() -> None:
+    text = "\u03c4\u03b1x\u03b9 \u03ba\u03b5\u03c1\u03b1k"
+    assert normalize_text(text) == "taxi kerak"
