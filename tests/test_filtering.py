@@ -79,3 +79,9 @@ def test_fast_filter_rejects_text_with_yuramiz() -> None:
     result = engine.evaluate(normalize_text("toshkentdan jizzaxga 2 kishi yuramiz +998901112233"))
     assert result.passed is False
     assert result.reason == "likely_taxi_offer"
+
+
+def test_fast_filter_accepts_route_with_bor_odam_phrase() -> None:
+    engine = FastFilter(min_length=10)
+    result = engine.evaluate(normalize_text("samarqanddan toshkentga bor odam +998901234567"))
+    assert result.passed is True

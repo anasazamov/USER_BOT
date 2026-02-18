@@ -96,3 +96,10 @@ def test_decision_rejects_text_with_yuramiz() -> None:
     decision = engine.decide(_msg("toshkentdan jizzaxga 2 kishi yuramiz +998901112233"))
     assert decision.should_forward is False
     assert decision.reason == "taxi_offer"
+
+
+def test_decision_accepts_route_with_bor_odam_phrase() -> None:
+    engine = DecisionEngine(RuleConfig(min_length=10))
+    decision = engine.decide(_msg("samarqanddan toshkentga bor odam +998901234567"))
+    assert decision.should_forward is True
+    assert decision.reason == "taxi_order"

@@ -39,6 +39,7 @@ class Settings:
     discovery_interval_sec: int = 1800
     discovery_query_limit: int = 20
     discovery_join_batch: int = 4
+    realtime_only: bool = True
     history_sync_enabled: bool = True
     history_sync_interval_sec: int = 300
     history_sync_batch_size: int = 120
@@ -104,6 +105,7 @@ class Settings:
             discovery_interval_sec=int(os.environ.get("DISCOVERY_INTERVAL_SEC", "1800")),
             discovery_query_limit=int(os.environ.get("DISCOVERY_QUERY_LIMIT", "20")),
             discovery_join_batch=int(os.environ.get("DISCOVERY_JOIN_BATCH", "4")),
+            realtime_only=_parse_bool(os.environ.get("REALTIME_ONLY", "true")),
             history_sync_enabled=_parse_bool(os.environ.get("HISTORY_SYNC_ENABLED", "true")),
             history_sync_interval_sec=int(os.environ.get("HISTORY_SYNC_INTERVAL_SEC", "300")),
             history_sync_batch_size=int(os.environ.get("HISTORY_SYNC_BATCH_SIZE", "120")),

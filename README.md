@@ -23,6 +23,7 @@ Tavsiya etiladi:
 - `FORWARD_TARGET`
 - `OWNER_USER_ID`
 - `ADMIN_WEB_TOKEN`
+- `REALTIME_ONLY`
 - `HISTORY_SYNC_ENABLED`
 - `HISTORY_SYNC_INTERVAL_SEC`
 - `HISTORY_SYNC_BATCH_SIZE`
@@ -172,7 +173,10 @@ Private guruh `id` ni olish:
 - yangi post ochilmaydi
 - oldingi e'lon `Status: Yangilandi` qilib update qilinadi
 7. Bot manba (buyurtma topilgan) guruhlarga reply yozmaydi
-8. History sync yoqilgan bo'lsa:
+8. `REALTIME_ONLY=true` bo'lsa:
+- faqat yangi `NewMessage` xabarlar filtrlanadi
+- edited/history xabarlar filtrlanmaydi
+9. `REALTIME_ONLY=false` va `HISTORY_SYNC_ENABLED=true` bo'lsa:
 - startupda guruhdagi eski xabarlar o'qilmaydi (latest message `last_seen` qilib baseline qilinadi)
 - history sync faqat shu baseline'dan keyin kelgan yangi xabarlarni o'qiydi
 - interval bo'yicha qayta scan bo'ladi
@@ -196,6 +200,7 @@ Public:
 
 - Loglar JSON formatda chiqadi (`stdout`).
 - Harakatlar bo'yicha loglar bor: message receive/filter/queue, decision, publish/publish_edit/join, history sync.
+- `message_filtered` va `decision_skip` loglarda `chat_ref`, `chat_title`, `chat_username`, `raw_preview`, `normalized_preview` chiqadi.
 - Dockerda ko'rish:
 
 ```bash

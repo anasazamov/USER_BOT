@@ -51,6 +51,10 @@ class FastFilter:
             r"bir\s+kishi|ikki\s+kishi|uch\s+kishi|tort\s+kishi|besh\s+kishi|olti\s+kishi|"
             r"yetti\s+kishi|sakkiz\s+kishi|toqqiz\s+kishi|on\s+kishi)\s+(?:bor|bot|kerak)\b"
         )
+        self.bor_people_pattern = re.compile(
+            r"\b(?:bor|bot)\s+(?:\d+\s*(?:ta\s*)?)?(?:odam|kishi|passajir)\b"
+            r"|\b(?:odam|kishi|passajir)\s+bor\b"
+        )
         self.passenger_needed_pattern = re.compile(r"\b\d+\s*(odam|kishi|joy)\s+kerak\b")
         self.route_request_pattern = re.compile(
             r"\b[a-z0-9]{3,}dan\b.*\b(?:yuradigan|ketadigan)\s+kim\s+bor\b"
@@ -101,6 +105,7 @@ class FastFilter:
         has_route = bool(self.route_pattern.search(normalized_text)) or bool(self.suffix_route_pattern.search(normalized_text))
         has_people = bool(self.people_pattern.search(normalized_text))
         has_passenger_announcement = bool(self.passenger_announcement_pattern.search(normalized_text))
+        has_bor_people = bool(self.bor_people_pattern.search(normalized_text))
         has_passenger_needed = bool(self.passenger_needed_pattern.search(normalized_text))
         has_route_request = bool(self.route_request_pattern.search(normalized_text))
         has_yuramiz = "yuramiz" in tokens or "yuryamiz" in tokens
@@ -110,7 +115,7 @@ class FastFilter:
         has_phone = bool(self.phone_pattern.search(normalized_text))
         has_region = self.geo.detect_region(normalized_text) is not None
         has_order_announcement = (
-            (has_route and has_passenger_announcement)
+            (has_route and (has_passenger_announcement or has_bor_people))
             or has_route_request
             or (has_route and has_request_phrase and has_people)
         )

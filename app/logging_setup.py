@@ -19,6 +19,11 @@ class JsonFormatter(logging.Formatter):
         for extra_key in (
             "chat_id",
             "message_id",
+            "chat_title",
+            "chat_username",
+            "chat_ref",
+            "raw_preview",
+            "normalized_preview",
             "action",
             "decision",
             "reason",

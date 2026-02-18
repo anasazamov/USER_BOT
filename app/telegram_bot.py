@@ -58,7 +58,7 @@ class TelegramUserbot:
         self._wire_handlers()
 
     def _wire_handlers(self) -> None:
-        async def process_event(event: events.common.EventCommon) -> None:
+        async def process_event(event: events.common.EventCommon, source: str) -> None:
             if event.chat_id is None:
                 return
 
@@ -67,7 +67,6 @@ class TelegramUserbot:
                 await self._discover_private_invites(raw_text, int(event.chat_id))
             if event.is_private:
                 return
-            source = "edited" if isinstance(event, events.MessageEdited.Event) else "realtime"
             await self._ingest_message(
                 chat_id=int(event.chat_id),
                 message_id=int(getattr(event, "id", 0)),
@@ -80,11 +79,12 @@ class TelegramUserbot:
 
         @self.client.on(events.NewMessage(incoming=True))
         async def on_new_message(event: events.NewMessage.Event) -> None:
-            await process_event(event)
+            await process_event(event, source="realtime")
 
-        @self.client.on(events.MessageEdited(incoming=True))
-        async def on_message_edited(event: events.MessageEdited.Event) -> None:
-            await process_event(event)
+        if not self.settings.realtime_only:
+            @self.client.on(events.MessageEdited(incoming=True))
+            async def on_message_edited(event: events.MessageEdited.Event) -> None:
+                await process_event(event, source="edited")
 
         @self.client.on(events.NewMessage(pattern=r"^/(kw|keyword)\b"))
         async def on_keyword_command(event: events.NewMessage.Event) -> None:
@@ -97,10 +97,19 @@ class TelegramUserbot:
             me = await self.client.get_me()
             self._owner_user_id = int(me.id)
         await self._load_chat_read_states()
-        if self.settings.history_sync_enabled:
+        history_enabled = self.settings.history_sync_enabled and not self.settings.realtime_only
+        if history_enabled:
             await self._history_sync_once(source="startup")
             await self._flush_chat_read_states()
             self._history_task = asyncio.create_task(self._history_sync_loop(), name="history-sync")
+        else:
+            logger.info(
+                "history_sync_disabled",
+                extra={
+                    "action": "history_sync",
+                    "reason": "realtime_only" if self.settings.realtime_only else "disabled",
+                },
+            )
         logger.info("userbot_started")
         await self.client.run_until_disconnected()
 
@@ -130,6 +139,12 @@ class TelegramUserbot:
         if message_id <= 0:
             return
 
+        base_context = self._build_message_log_context(
+            chat_id=chat_id,
+            chat_username=chat_username,
+            chat_title=chat_title,
+            raw_text=raw_text,
+        )
         self._mark_chat_seen(chat_id, message_id)
         logger.info(
             "message_received",
@@ -138,6 +153,7 @@ class TelegramUserbot:
                 "source": source,
                 "chat_id": chat_id,
                 "message_id": message_id,
+                **base_context,
             },
         )
 
@@ -150,11 +166,19 @@ class TelegramUserbot:
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "reason": "no_text",
+                    **base_context,
                 },
             )
             return
 
         normalized = normalize_text(raw_text)
+        normalized_context = self._build_message_log_context(
+            chat_id=chat_id,
+            chat_username=chat_username,
+            chat_title=chat_title,
+            raw_text=raw_text,
+            normalized_text=normalized,
+        )
         if not normalized:
             logger.info(
                 "message_filtered",
@@ -164,6 +188,7 @@ class TelegramUserbot:
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "reason": "empty",
+                    **normalized_context,
                 },
             )
             return
@@ -178,6 +203,7 @@ class TelegramUserbot:
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "reason": result.reason,
+                    **normalized_context,
                 },
             )
             return
@@ -199,6 +225,7 @@ class TelegramUserbot:
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "queue_size": self.queue.qsize(),
+                **normalized_context,
             },
         )
 
@@ -356,6 +383,13 @@ class TelegramUserbot:
 
     async def _process_message(self, msg: NormalizedMessage) -> None:
         decision = self.decision_engine.decide(msg)
+        decision_context = self._build_message_log_context(
+            chat_id=msg.envelope.chat_id,
+            chat_username=msg.envelope.chat_username,
+            chat_title=msg.envelope.chat_title,
+            raw_text=msg.envelope.raw_text,
+            normalized_text=msg.normalized_text,
+        )
         if not decision.should_forward:
             logger.info(
                 "decision_skip",
@@ -364,6 +398,7 @@ class TelegramUserbot:
                     "message_id": msg.envelope.message_id,
                     "decision": "skip",
                     "reason": decision.reason,
+                    **decision_context,
                 },
             )
             return
@@ -374,6 +409,7 @@ class TelegramUserbot:
                 "message_id": msg.envelope.message_id,
                 "decision": "forward",
                 "reason": decision.reason,
+                **decision_context,
             },
         )
         await self.executor.execute(msg, decision)
@@ -486,6 +522,38 @@ class TelegramUserbot:
             if file_name:
                 return str(file_name)
         return ""
+
+    @classmethod
+    def _build_message_log_context(
+        cls,
+        chat_id: int,
+        chat_username: str | None,
+        chat_title: str | None,
+        raw_text: str,
+        normalized_text: str | None = None,
+    ) -> dict[str, object]:
+        username = (chat_username or "").strip().lstrip("@")
+        title = (chat_title or "").strip()
+        chat_ref = f"@{username}" if username else (title or str(chat_id))
+
+        context: dict[str, object] = {
+            "chat_ref": chat_ref,
+            "raw_preview": cls._preview_text(raw_text),
+        }
+        if username:
+            context["chat_username"] = f"@{username}"
+        if title:
+            context["chat_title"] = title
+        if normalized_text is not None:
+            context["normalized_preview"] = cls._preview_text(normalized_text)
+        return context
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 180) -> str:
+        compact = " ".join((text or "").split())
+        if len(compact) <= limit:
+            return compact
+        return f"{compact[: max(0, limit - 3)]}..."
 
 
 def build_userbot(
