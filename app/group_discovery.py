@@ -11,6 +11,17 @@ from app.runtime_config import RuntimeConfigService
 from app.storage.db import ActionRepository, DiscoveredGroup
 
 logger = logging.getLogger(__name__)
+_QUERY_PRIORITY_TOKENS = (
+    "samarqand",
+    "samarkand",
+    "toshkent",
+    "tashkent",
+    "fargona",
+    "fergana",
+    "andijon",
+    "namangan",
+    "vodiy",
+)
 
 
 class GroupDiscoveryManager:
@@ -64,12 +75,13 @@ class GroupDiscoveryManager:
                 queries = runtime.discovery_queries if runtime else self.queries
                 query_limit = runtime.discovery_query_limit if runtime else self.query_limit
                 join_batch = runtime.discovery_join_batch if runtime else self.join_batch
+                prioritized_queries = self._prioritize_queries(queries)
                 logger.info(
                     "group_discovery_iteration",
                     extra={"action": "discovery", "count": len(queries), "reason": f"limit={query_limit}"},
                 )
 
-                for query in queries:
+                for query in prioritized_queries:
                     await self._discover_query(query, query_limit=query_limit)
                 await self._join_pending(join_batch)
             except Exception:
@@ -118,3 +130,15 @@ class GroupDiscoveryManager:
         except Exception:
             logger.debug("group_discovery_auth_check_failed")
             return False
+
+    @staticmethod
+    def _prioritize_queries(queries: tuple[str, ...]) -> tuple[str, ...]:
+        prioritized = sorted(
+            queries,
+            key=lambda query: (
+                0
+                if any(token in query.lower() for token in _QUERY_PRIORITY_TOKENS)
+                else 1
+            ),
+        )
+        return tuple(prioritized)

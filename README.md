@@ -26,6 +26,7 @@ Tavsiya etiladi:
 - `HISTORY_SYNC_ENABLED`
 - `HISTORY_SYNC_INTERVAL_SEC`
 - `HISTORY_SYNC_BATCH_SIZE`
+- `PRIORITY_GROUP_LINKS`
 
 DB eslatma:
 
@@ -159,6 +160,7 @@ Private guruh `id` ni olish:
 3. Fast filter order bo'lish ehtimolini tekshiradi.
 4. Decision engine yakuniy qaror beradi:
 - kuchli buyurtma patternlari (`...dan ...ga`, `1 kishi/odam bor`, `kim bor`) bo'lsa qabul qiladi
+- matnda `yuramiz`/`yuryamiz` bo'lsa buyurtma deb olinmaydi (taklif sifatida rad qilinadi)
 - taksi takliflari rad etiladi
 - spam/ads kategoriyalar chiqarib tashlanadi
 5. Mos xabar forward qilinadi:
@@ -187,6 +189,8 @@ Public:
 
 - `DISCOVERY_ENABLED=true` bo'lsa querylar orqali public group discovery ishlaydi.
 - Topilgan guruhlar navbat bilan join qilinadi (`join_limit_day` cheklovi bilan).
+- `PRIORITY_GROUP_LINKS` dagi guruhlar startupda avtomatik seed qilinadi va join navbatida birinchi o'ringa olinadi.
+- Discovery query navbatida Samarqand/Toshkent/Vodiyga oid querylar oldinda ishlaydi.
 
 ## Logging
 

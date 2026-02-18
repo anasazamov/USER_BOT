@@ -14,3 +14,16 @@ def test_geo_detects_karakalpak_region() -> None:
     assert match is not None
     assert match.hashtag == "#Qoraqalpogiston"
 
+
+def test_geo_detects_samarqand_aliases() -> None:
+    resolver = GeoResolver()
+    match = resolver.detect_region("jartepadan marhoboga 1 kishi bor")
+    assert match is not None
+    assert match.hashtag == "#SamarqandViloyati"
+
+
+def test_geo_detects_toshkent_typo_alias() -> None:
+    resolver = GeoResolver()
+    match = resolver.detect_region("toshkintdan urgutga ketadigan kim bor")
+    assert match is not None
+    assert match.hashtag in {"#ToshkentShahri", "#ToshkentViloyati"}

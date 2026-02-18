@@ -13,6 +13,7 @@ from app.invite_manager import InviteLinkManager
 from app.keywords import KeywordService
 from app.logging_setup import configure_logging
 from app.message_queue import MessageQueue
+from app.priority_groups import seed_priority_groups
 from app.rate_limit import CooldownManager, InMemoryWindowLimiter
 from app.runtime_config import RuntimeConfigService
 from app.storage.db import ActionRepository, Postgres
@@ -35,6 +36,16 @@ async def main() -> None:
     await keyword_service.initialize()
     runtime_config = RuntimeConfigService(settings, repository)
     await runtime_config.initialize()
+    seeded_public, seeded_private = await seed_priority_groups(repository, settings.priority_group_links)
+    if seeded_public or seeded_private:
+        logger.info(
+            "priority_groups_seeded",
+            extra={
+                "action": "startup_seed",
+                "reason": "priority_groups",
+                "count": seeded_public + seeded_private,
+            },
+        )
 
     limiter_backend = InMemoryWindowLimiter()
     if settings.redis_url:

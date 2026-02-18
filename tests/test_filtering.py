@@ -72,3 +72,10 @@ def test_fast_filter_accepts_route_request_with_pochta() -> None:
     engine = FastFilter(min_length=10)
     result = engine.evaluate(normalize_text("Shahardan yuradigan kim bor pochta bor"))
     assert result.passed is True
+
+
+def test_fast_filter_rejects_text_with_yuramiz() -> None:
+    engine = FastFilter(min_length=10)
+    result = engine.evaluate(normalize_text("toshkentdan jizzaxga 2 kishi yuramiz +998901112233"))
+    assert result.passed is False
+    assert result.reason == "likely_taxi_offer"

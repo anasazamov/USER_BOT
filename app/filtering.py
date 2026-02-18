@@ -64,7 +64,7 @@ class FastFilter:
         self.offer_context_pattern = re.compile(
             r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
             r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
-            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|yuramiz|yuryamiz|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
         )
         self.vehicle_model_pattern = re.compile(
             r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
@@ -103,6 +103,7 @@ class FastFilter:
         has_passenger_announcement = bool(self.passenger_announcement_pattern.search(normalized_text))
         has_passenger_needed = bool(self.passenger_needed_pattern.search(normalized_text))
         has_route_request = bool(self.route_request_pattern.search(normalized_text))
+        has_yuramiz = "yuramiz" in tokens or "yuryamiz" in tokens
         has_request_phrase = bool(self.request_phrase_pattern.search(normalized_text))
         has_offer_context = bool(self.offer_context_pattern.search(normalized_text))
         has_vehicle_model = bool(self.vehicle_model_pattern.search(normalized_text))
@@ -121,6 +122,8 @@ class FastFilter:
             or (has_passenger_needed and has_route and transport_hits > 0)
         )
         if offer_hits > 0 and not has_request_phrase:
+            return FastFilterResult(False, "likely_taxi_offer", 0)
+        if has_yuramiz:
             return FastFilterResult(False, "likely_taxi_offer", 0)
         if offer_dominant and not has_request_phrase:
             return FastFilterResult(False, "likely_taxi_offer", 0)
@@ -180,8 +183,24 @@ class FastFilter:
                     "haydovchimiz",
                     "chiqaman",
                     "chiqamiz",
+                    "yuramiz",
+                    "yuryamiz",
                 },
-                location={"toshkent", "andijon", "namangan", "fargona", "samarqand", "nukus", "buxoro"},
+                location={
+                    "toshkent",
+                    "toshkint",
+                    "andijon",
+                    "namangan",
+                    "fargona",
+                    "vodiy",
+                    "samarqand",
+                    "samarqan",
+                    "jartepa",
+                    "marhabo",
+                    "texnagazoil",
+                    "nukus",
+                    "buxoro",
+                },
                 route={"dan", "ga", "from", "to"},
                 exclude={"vakansiya", "reklama", "kurs", "kanal"},
             )

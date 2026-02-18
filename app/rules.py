@@ -66,7 +66,7 @@ class DecisionEngine:
         self.offer_context_pattern = re.compile(
             r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
             r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
-            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|yuramiz|yuryamiz|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
         )
         self.vehicle_model_pattern = re.compile(
             r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
@@ -108,6 +108,7 @@ class DecisionEngine:
         has_passenger_announcement = bool(self.passenger_announcement_pattern.search(text))
         has_passenger_needed = bool(self.passenger_needed_pattern.search(text))
         has_route_request = bool(self.route_request_pattern.search(text))
+        has_yuramiz = "yuramiz" in tokens or "yuryamiz" in tokens
 
         has_phone = bool(self.phone_pattern.search(raw_text)) or bool(self.phone_pattern.search(text))
         has_username = bool(self.username_pattern.search(raw_text))
@@ -126,6 +127,8 @@ class DecisionEngine:
 
         # Offer messages are ignored unless there is explicit request phrase.
         if has_offer and not has_request_phrase:
+            return Decision(False, False, reason="taxi_offer")
+        if has_yuramiz:
             return Decision(False, False, reason="taxi_offer")
         offer_dominant = (
             has_offer_context
@@ -194,8 +197,24 @@ class DecisionEngine:
                 "haydovchimiz",
                 "chiqaman",
                 "chiqamiz",
+                "yuramiz",
+                "yuryamiz",
             }
-            self.location_tokens = {"toshkent", "samarqand", "andijon", "namangan", "fargona", "nukus", "buxoro"}
+            self.location_tokens = {
+                "toshkent",
+                "toshkint",
+                "samarqand",
+                "samarqan",
+                "jartepa",
+                "marhabo",
+                "texnagazoil",
+                "andijon",
+                "namangan",
+                "fargona",
+                "vodiy",
+                "nukus",
+                "buxoro",
+            }
             self.route_tokens = {"dan", "ga", "from", "to"}
             self.exclude_tokens = {"vakansiya", "reklama", "kurs", "kanal", "job"}
             self._rebuild_patterns()

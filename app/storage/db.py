@@ -125,7 +125,14 @@ class ActionRepository:
     async def fetch_active_invite_links(self) -> list[str]:
         if not self.db.pool:
             raise RuntimeError("db_not_connected")
-        query = "SELECT invite_link FROM private_invite_links WHERE active = TRUE ORDER BY last_seen_at DESC"
+        query = """
+        SELECT invite_link
+        FROM private_invite_links
+        WHERE active = TRUE
+        ORDER BY
+          CASE WHEN note = 'priority_seed' THEN 0 ELSE 1 END,
+          last_seen_at DESC
+        """
         async with self.db.pool.acquire() as conn:
             rows = await conn.fetch(query)
         return [row["invite_link"] for row in rows]
@@ -317,7 +324,12 @@ class ActionRepository:
         async with self.db.pool.acquire() as conn:
             await conn.execute(query, peer_id, title, clean_username, source_query, joined, active)
 
-    async def upsert_public_group_username(self, username: str, title: str = "admin_manual") -> int:
+    async def upsert_public_group_username(
+        self,
+        username: str,
+        title: str = "admin_manual",
+        source_query: str = "admin_manual",
+    ) -> int:
         if not self.db.pool:
             raise RuntimeError("db_not_connected")
         clean_username = username.strip().lstrip("@").lower()
@@ -328,16 +340,16 @@ class ActionRepository:
         select_query = "SELECT peer_id FROM discovered_groups WHERE username = $1 LIMIT 1"
         update_query = """
         UPDATE discovered_groups
-        SET active = TRUE, updated_at = NOW(), last_error = NULL, source_query = 'admin_manual'
+        SET active = TRUE, updated_at = NOW(), last_error = NULL, source_query = $2
         WHERE peer_id = $1
         """
         insert_query = """
         INSERT INTO discovered_groups (peer_id, title, username, source_query, joined, active)
-        VALUES ($1, $2, $3, 'admin_manual', FALSE, TRUE)
+        VALUES ($1, $2, $3, $4, FALSE, TRUE)
         ON CONFLICT (peer_id) DO UPDATE SET
             title = EXCLUDED.title,
             username = EXCLUDED.username,
-            source_query = 'admin_manual',
+            source_query = EXCLUDED.source_query,
             active = TRUE,
             updated_at = NOW(),
             last_error = NULL
@@ -346,11 +358,11 @@ class ActionRepository:
             row = await conn.fetchrow(select_query, clean_username)
             if row:
                 peer_id = int(row["peer_id"])
-                await conn.execute(update_query, peer_id)
+                await conn.execute(update_query, peer_id, source_query)
                 return peer_id
 
             peer_id = _manual_peer_id(clean_username)
-            await conn.execute(insert_query, peer_id, title, clean_username)
+            await conn.execute(insert_query, peer_id, title, clean_username, source_query)
             return peer_id
 
     async def fetch_public_groups(self, limit: int = 300) -> list[DiscoveredGroup]:
@@ -387,7 +399,9 @@ class ActionRepository:
           AND active = TRUE
           AND username IS NOT NULL
           AND username <> ''
-        ORDER BY updated_at DESC
+        ORDER BY
+          CASE WHEN source_query = 'priority_seed' THEN 0 ELSE 1 END,
+          updated_at DESC
         LIMIT $1
         """
         async with self.db.pool.acquire() as conn:

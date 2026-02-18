@@ -61,6 +61,16 @@ class Settings:
         "taxi urganch",
         "yandex taxi uz",
     )
+    priority_group_links: tuple[str, ...] = (
+        "https://t.me/Qoqon_Surxandaryo",
+        "https://t.me/qoqon41",
+        "https://t.me/Fargona_Jizzax_tax",
+        "https://t.me/Fargona_Samarqand_Taxi_2",
+        "https://t.me/Fargona_Samarqand_taksi_2",
+        "t.me/Ele1JGFwZDc1MWVi",
+        "https://t.me/urguttoshkint",
+        "t.me/Toshkent_samarqan_taksi",
+    )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -109,6 +119,19 @@ class Settings:
                         "taxi tashkent,taksi toshkent,taxi samarqand,taxi andijon,taxi namangan,"
                         "taxi fargona,taxi buxoro,taxi navoiy,taxi qarshi,taxi termiz,taxi nukus,"
                         "taxi urganch,yandex taxi uz"
+                    ),
+                ).split(",")
+                if q.strip()
+            ),
+            priority_group_links=tuple(
+                q.strip()
+                for q in os.environ.get(
+                    "PRIORITY_GROUP_LINKS",
+                    (
+                        "https://t.me/Qoqon_Surxandaryo,https://t.me/qoqon41,"
+                        "https://t.me/Fargona_Jizzax_tax,https://t.me/Fargona_Samarqand_Taxi_2,"
+                        "https://t.me/Fargona_Samarqand_taksi_2,t.me/Ele1JGFwZDc1MWVi,"
+                        "https://t.me/urguttoshkint,t.me/Toshkent_samarqan_taksi"
                     ),
                 ).split(",")
                 if q.strip()
