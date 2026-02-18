@@ -250,6 +250,21 @@ class TelegramUserbot:
         entity = getattr(dialog, "entity")
         chat_username = getattr(entity, "username", None)
         last_seen = self._chat_last_seen.get(chat_id, 0)
+        if last_seen <= 0:
+            latest_message_id = self._dialog_latest_message_id(dialog)
+            if latest_message_id > 0:
+                self._mark_chat_seen(chat_id, latest_message_id)
+                logger.info(
+                    "history_chat_baselined",
+                    extra={
+                        "action": "history_chat_scan",
+                        "source": source,
+                        "chat_id": chat_id,
+                        "count": 0,
+                        "reason": f"skip_old_messages baseline={latest_message_id}",
+                    },
+                )
+                return 0
 
         scanned = 0
         max_seen = last_seen
@@ -295,6 +310,14 @@ class TelegramUserbot:
             },
         )
         return scanned
+
+    @staticmethod
+    def _dialog_latest_message_id(dialog: object) -> int:
+        latest_message = getattr(dialog, "message", None)
+        latest_id = int(getattr(latest_message, "id", 0) or 0)
+        if latest_id > 0:
+            return latest_id
+        return int(getattr(dialog, "top_message", 0) or 0)
 
     async def _load_chat_read_states(self) -> None:
         try:

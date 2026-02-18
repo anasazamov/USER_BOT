@@ -171,9 +171,10 @@ Private guruh `id` ni olish:
 - oldingi e'lon `Status: Yangilandi` qilib update qilinadi
 7. Bot manba (buyurtma topilgan) guruhlarga reply yozmaydi
 8. History sync yoqilgan bo'lsa:
-- startupda guruhlar tarixidan yangi xabarlar o'qiladi
+- startupda guruhdagi eski xabarlar o'qilmaydi (latest message `last_seen` qilib baseline qilinadi)
+- history sync faqat shu baseline'dan keyin kelgan yangi xabarlarni o'qiydi
 - interval bo'yicha qayta scan bo'ladi
-- yangi qo'shilgan guruhlar ham keyingi sync'da tarix bilan birga o'qiladi
+- yangi qo'shilgan guruhlar ham keyingi sync'da eski tarixsiz baseline qilinadi
 
 ### 5) Guruh topish va qo'shilish
 
