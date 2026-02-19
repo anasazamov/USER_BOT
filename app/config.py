@@ -9,11 +9,25 @@ def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_int_list(raw: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for part in raw.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        values.append(int(chunk))
+    return tuple(values)
+
+
 @dataclass(slots=True)
 class Settings:
     api_id: int
     api_hash: str
     session_name: str = "taxi_userbot"
+    bot_token: Optional[str] = None
+    bot_poll_timeout_sec: int = 25
+    bot_broadcast_subscribers: bool = False
+    bot_admin_user_ids: tuple[int, ...] = ()
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/userbot"
     redis_url: Optional[str] = None
@@ -77,10 +91,20 @@ class Settings:
     def from_env(cls) -> "Settings":
         api_id = int(os.environ["TG_API_ID"])
         api_hash = os.environ["TG_API_HASH"]
+        owner_user_id = int(os.environ["OWNER_USER_ID"]) if os.environ.get("OWNER_USER_ID") else None
+        admin_user_ids_raw = os.environ.get("BOT_ADMIN_USER_IDS", "")
+        if not admin_user_ids_raw and owner_user_id is not None:
+            admin_user_ids_raw = str(owner_user_id)
         return cls(
             api_id=api_id,
             api_hash=api_hash,
             session_name=os.environ.get("TG_SESSION_NAME", "taxi_userbot"),
+            bot_token=os.environ.get("TG_BOT_TOKEN"),
+            bot_poll_timeout_sec=int(os.environ.get("BOT_POLL_TIMEOUT_SEC", "25")),
+            bot_broadcast_subscribers=_parse_bool(
+                os.environ.get("BOT_BROADCAST_SUBSCRIBERS", "false")
+            ),
+            bot_admin_user_ids=_parse_int_list(admin_user_ids_raw),
             database_url=os.environ.get(
                 "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/userbot"
             ),
@@ -88,9 +112,7 @@ class Settings:
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             worker_count=int(os.environ.get("WORKER_COUNT", "4")),
             queue_max_size=int(os.environ.get("QUEUE_MAX_SIZE", "2000")),
-            owner_user_id=(
-                int(os.environ["OWNER_USER_ID"]) if os.environ.get("OWNER_USER_ID") else None
-            ),
+            owner_user_id=owner_user_id,
             forward_target=os.environ.get("FORWARD_TARGET", "me"),
             min_text_length=int(os.environ.get("MIN_TEXT_LENGTH", "18")),
             per_group_actions_hour=int(os.environ.get("PER_GROUP_ACTIONS_HOUR", "15")),

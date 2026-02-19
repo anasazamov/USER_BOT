@@ -86,3 +86,16 @@ ALTER TABLE discovered_groups
 CREATE INDEX IF NOT EXISTS idx_discovered_groups_joined ON discovered_groups (joined);
 CREATE INDEX IF NOT EXISTS idx_discovered_groups_active ON discovered_groups (active);
 CREATE INDEX IF NOT EXISTS idx_discovered_groups_username ON discovered_groups (username);
+
+CREATE TABLE IF NOT EXISTS bot_subscribers (
+    user_id BIGINT PRIMARY KEY,
+    chat_id BIGINT NOT NULL,
+    username TEXT,
+    first_name TEXT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_subscribers_active ON bot_subscribers (active);
+CREATE INDEX IF NOT EXISTS idx_bot_subscribers_updated_at ON bot_subscribers (updated_at DESC);

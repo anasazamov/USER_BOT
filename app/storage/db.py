@@ -102,6 +102,27 @@ class PrivateInviteLink:
     last_seen_at: str
 
 
+@dataclass(slots=True)
+class BotSubscriber:
+    user_id: int
+    chat_id: int
+    username: str | None
+    first_name: str | None
+    active: bool
+    subscribed_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class ActionStats:
+    published_1h: int
+    published_24h: int
+    edited_24h: int
+    joins_24h: int
+    errors_24h: int
+    total_actions_24h: int
+
+
 def _manual_peer_id(username: str) -> int:
     key = username.strip().lower().lstrip("@")
     crc = zlib.crc32(key.encode("utf-8")) & 0xFFFFFFFF
@@ -440,6 +461,137 @@ class ActionRepository:
         async with self.db.pool.acquire() as conn:
             status = await conn.execute(query, clean_username)
         return status.endswith("1")
+
+    async def upsert_bot_subscriber(
+        self,
+        user_id: int,
+        chat_id: int,
+        username: str | None,
+        first_name: str | None,
+        active: bool = True,
+    ) -> None:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        clean_username = username.strip().lstrip("@").lower() if username else None
+        query = """
+        INSERT INTO bot_subscribers (user_id, chat_id, username, first_name, active, subscribed_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+            chat_id = EXCLUDED.chat_id,
+            username = COALESCE(EXCLUDED.username, bot_subscribers.username),
+            first_name = COALESCE(EXCLUDED.first_name, bot_subscribers.first_name),
+            active = EXCLUDED.active,
+            updated_at = NOW()
+        """
+        async with self.db.pool.acquire() as conn:
+            await conn.execute(query, user_id, chat_id, clean_username, first_name, active)
+
+    async def set_bot_subscriber_active(self, user_id: int, active: bool) -> bool:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        UPDATE bot_subscribers
+        SET active = $2, updated_at = NOW()
+        WHERE user_id = $1
+        """
+        async with self.db.pool.acquire() as conn:
+            status = await conn.execute(query, user_id, active)
+        return status.endswith("1")
+
+    async def count_bot_subscribers(self, active_only: bool = True) -> int:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = (
+            "SELECT COUNT(*) FROM bot_subscribers WHERE active = TRUE"
+            if active_only
+            else "SELECT COUNT(*) FROM bot_subscribers"
+        )
+        async with self.db.pool.acquire() as conn:
+            value = await conn.fetchval(query)
+        return int(value or 0)
+
+    async def fetch_active_subscriber_chat_ids(self, limit: int = 5000) -> list[int]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT chat_id
+        FROM bot_subscribers
+        WHERE active = TRUE
+        ORDER BY updated_at DESC
+        LIMIT $1
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+        return [int(row["chat_id"]) for row in rows]
+
+    async def fetch_bot_subscribers(self, limit: int = 50, active_only: bool = True) -> list[BotSubscriber]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        where_clause = "WHERE active = TRUE" if active_only else ""
+        query = f"""
+        SELECT user_id, chat_id, username, first_name, active, subscribed_at, updated_at
+        FROM bot_subscribers
+        {where_clause}
+        ORDER BY updated_at DESC
+        LIMIT $1
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+        return [
+            BotSubscriber(
+                user_id=int(row["user_id"]),
+                chat_id=int(row["chat_id"]),
+                username=row["username"],
+                first_name=row["first_name"],
+                active=bool(row["active"]),
+                subscribed_at=str(row["subscribed_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    async def fetch_action_stats(self) -> ActionStats:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT
+            COUNT(*) FILTER (
+                WHERE action_type = 'publish'
+                  AND created_at >= NOW() - INTERVAL '1 hour'
+            ) AS published_1h,
+            COUNT(*) FILTER (
+                WHERE action_type = 'publish'
+                  AND created_at >= NOW() - INTERVAL '24 hour'
+            ) AS published_24h,
+            COUNT(*) FILTER (
+                WHERE action_type = 'publish_edit'
+                  AND created_at >= NOW() - INTERVAL '24 hour'
+            ) AS edited_24h,
+            COUNT(*) FILTER (
+                WHERE action_type IN ('join', 'join_public')
+                  AND created_at >= NOW() - INTERVAL '24 hour'
+            ) AS joins_24h,
+            COUNT(*) FILTER (
+                WHERE status = 'error'
+                  AND created_at >= NOW() - INTERVAL '24 hour'
+            ) AS errors_24h,
+            COUNT(*) FILTER (
+                WHERE created_at >= NOW() - INTERVAL '24 hour'
+            ) AS total_actions_24h
+        FROM action_log
+        """
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(query)
+        if row is None:
+            return ActionStats(0, 0, 0, 0, 0, 0)
+        return ActionStats(
+            published_1h=int(row["published_1h"] or 0),
+            published_24h=int(row["published_24h"] or 0),
+            edited_24h=int(row["edited_24h"] or 0),
+            joins_24h=int(row["joins_24h"] or 0),
+            errors_24h=int(row["errors_24h"] or 0),
+            total_actions_24h=int(row["total_actions_24h"] or 0),
+        )
 
     async def mark_group_joined(self, peer_id: int) -> None:
         if not self.db.pool:

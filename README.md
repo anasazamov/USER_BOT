@@ -22,6 +22,9 @@ Tavsiya etiladi:
 - `DATABASE_URL`
 - `FORWARD_TARGET`
 - `OWNER_USER_ID`
+- `TG_BOT_TOKEN`
+- `BOT_ADMIN_USER_IDS`
+- `BOT_BROADCAST_SUBSCRIBERS`
 - `ADMIN_WEB_TOKEN`
 - `REALTIME_ONLY`
 - `HISTORY_SYNC_ENABLED`
@@ -154,6 +157,12 @@ Private guruh `id` ni olish:
 1. Guruhdan biror message linkini oling: `https://t.me/c/1234567890/55`
 2. `FORWARD_TARGET=-1001234567890` qilib yozing (`c/` dan keyingi son boshiga `-100` qo'shiladi).
 
+Bot orqali publish:
+
+- `TG_BOT_TOKEN` berilsa buyurtmalar Telegram Bot API orqali yuboriladi.
+- Bot `FORWARD_TARGET` bo'lgan guruh/channelda admin bo'lishi kerak.
+- `BOT_ADMIN_USER_IDS` ichiga bot admin user ID larini yozing (masalan `12345,67890`).
+
 ### 4) Telegram userbot ishlash tartibi
 
 1. Guruhlardan kelgan xabarlar olinadi.
@@ -196,6 +205,17 @@ Public:
 - Topilgan guruhlar navbat bilan join qilinadi (`join_limit_day` cheklovi bilan).
 - `PRIORITY_GROUP_LINKS` dagi guruhlar startupda avtomatik seed qilinadi va join navbatida birinchi o'ringa olinadi.
 - Discovery query navbatida Samarqand/Toshkent/Vodiyga oid querylar oldinda ishlaydi.
+
+### 6) Management Bot buyruqlari
+
+`TG_BOT_TOKEN` yoqilganda bot private chat buyruqlari:
+
+- `/start` yoki `/subscribe` -> subscriber'ni yoqadi
+- `/stop` yoki `/unsubscribe` -> subscriber'ni o'chiradi
+- `/help` -> yordam
+- `/stats` (admin) -> publish/error statistikasi
+- `/subscribers` (admin) -> subscriber soni va ro'yxati
+- `/broadcast <text>` (admin) -> subscriberlarga xabar yuboradi (`BOT_BROADCAST_SUBSCRIBERS=true` bo'lsa)
 
 ## Logging
 

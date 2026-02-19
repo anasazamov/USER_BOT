@@ -12,6 +12,7 @@ from app.group_discovery import GroupDiscoveryManager
 from app.invite_manager import InviteLinkManager
 from app.keywords import KeywordService
 from app.logging_setup import configure_logging
+from app.management_bot import TelegramManagementBot
 from app.message_queue import MessageQueue
 from app.priority_groups import seed_priority_groups
 from app.rate_limit import CooldownManager, InMemoryWindowLimiter
@@ -71,7 +72,18 @@ async def main() -> None:
     queue = MessageQueue(settings.queue_max_size)
 
     client = TelegramClient(settings.session_name, settings.api_id, settings.api_hash)
-    executor = ActionExecutor(client, settings, cooldown, repository, runtime_config=runtime_config)
+    management_bot: TelegramManagementBot | None = None
+    if settings.bot_token:
+        management_bot = TelegramManagementBot(settings=settings, repository=repository)
+
+    executor = ActionExecutor(
+        client,
+        settings,
+        cooldown,
+        repository,
+        runtime_config=runtime_config,
+        bot_publisher=management_bot,
+    )
     invite_manager = InviteLinkManager(repository, executor, client, settings.invite_sync_interval_sec)
     web_server: AdminWebServer | None = None
     if settings.admin_web_enabled:
@@ -106,6 +118,8 @@ async def main() -> None:
     try:
         if web_server:
             await web_server.start()
+        if management_bot:
+            await management_bot.start()
         await invite_manager.start()
         if discovery_manager:
             await discovery_manager.start()
@@ -117,6 +131,9 @@ async def main() -> None:
         if discovery_manager:
             with suppress(Exception):
                 await discovery_manager.stop()
+        if management_bot:
+            with suppress(Exception):
+                await management_bot.stop()
         with suppress(Exception):
             await invite_manager.stop()
         await userbot.shutdown()

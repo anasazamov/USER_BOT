@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import re
+from typing import Protocol
 
 from telethon import TelegramClient, functions
 
@@ -16,6 +17,17 @@ from app.storage.db import ActionRepository
 logger = logging.getLogger(__name__)
 
 
+class BotPublisher(Protocol):
+    async def send_message(self, chat_id: str | int, text: str) -> int:
+        ...
+
+    async def edit_message(self, chat_id: str | int, message_id: int, text: str) -> None:
+        ...
+
+    async def broadcast_to_subscribers(self, text: str) -> tuple[int, int]:
+        ...
+
+
 class ActionExecutor:
     def __init__(
         self,
@@ -24,12 +36,14 @@ class ActionExecutor:
         cooldown: CooldownManager,
         repository: ActionRepository,
         runtime_config: RuntimeConfigService | None = None,
+        bot_publisher: BotPublisher | None = None,
     ) -> None:
         self.client = client
         self.settings = settings
         self.cooldown = cooldown
         self.repository = repository
         self.runtime_config = runtime_config
+        self.bot_publisher = bot_publisher
         self._published_order_map: dict[tuple[int, int], tuple[str | int, int]] = {}
 
     async def execute(self, msg: NormalizedMessage, decision: Decision) -> None:
@@ -88,12 +102,19 @@ class ActionExecutor:
                         "target_message_id": target_message_id,
                     },
                 )
-                await self.client.edit_message(
-                    entity=target_entity,
-                    message=target_message_id,
-                    text=outbound,
-                    link_preview=False,
-                )
+                if self.bot_publisher:
+                    await self.bot_publisher.edit_message(
+                        chat_id=target_entity,
+                        message_id=target_message_id,
+                        text=outbound,
+                    )
+                else:
+                    await self.client.edit_message(
+                        entity=target_entity,
+                        message=target_message_id,
+                        text=outbound,
+                        link_preview=False,
+                    )
                 logger.info(
                     "publish_edit_ok",
                     extra={
@@ -130,8 +151,16 @@ class ActionExecutor:
                 "target": str(target_entity),
             },
         )
-        sent_message = await self.client.send_message(entity=target_entity, message=outbound, link_preview=False)
-        sent_message_id = int(getattr(sent_message, "id", 0) or 0)
+        sent_message_id = 0
+        if self.bot_publisher:
+            sent_message_id = await self.bot_publisher.send_message(chat_id=target_entity, text=outbound)
+        else:
+            sent_message = await self.client.send_message(
+                entity=target_entity,
+                message=outbound,
+                link_preview=False,
+            )
+            sent_message_id = int(getattr(sent_message, "id", 0) or 0)
         if sent_message_id > 0:
             if len(self._published_order_map) >= 10_000:
                 self._published_order_map.pop(next(iter(self._published_order_map)))
@@ -147,6 +176,17 @@ class ActionExecutor:
             },
         )
         await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish", "ok")
+        if self.bot_publisher:
+            sent_count, failed_count = await self.bot_publisher.broadcast_to_subscribers(outbound)
+            if sent_count or failed_count:
+                logger.info(
+                    "subscriber_broadcast_done",
+                    extra={
+                        "action": "bot_broadcast",
+                        "count": sent_count,
+                        "reason": f"failed={failed_count}",
+                    },
+                )
 
     async def try_join(self, invite_link: str) -> bool:
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
