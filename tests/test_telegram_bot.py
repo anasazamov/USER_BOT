@@ -60,3 +60,17 @@ def test_summarize_dialogs_counts_monitored_chats() -> None:
     assert summary["channels"] == 1
     assert summary["private"] == 1
     assert summary["monitored_chats"] == 2
+
+
+def test_is_target_match_by_username() -> None:
+    assert TelegramUserbot._is_target_match("@test_taxi_order", -100777, "test_taxi_order") is True
+    assert TelegramUserbot._is_target_match("@test_taxi_order", -100777, "another_group") is False
+
+
+def test_is_target_match_by_numeric_id() -> None:
+    assert TelegramUserbot._is_target_match("-1001234567890", -1001234567890, None) is True
+    assert TelegramUserbot._is_target_match("-1001234567890", -1000000000000, None) is False
+
+
+def test_is_target_match_ignores_me_targets() -> None:
+    assert TelegramUserbot._is_target_match("me", -100777, "test_taxi_order") is False

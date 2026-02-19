@@ -176,6 +176,21 @@ class TelegramUserbot:
             },
         )
 
+        forward_target = self._current_forward_target()
+        if self._is_target_match(forward_target, chat_id, chat_username):
+            logger.info(
+                "message_filtered",
+                extra={
+                    "action": "filter_drop",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reason": "forward_target_loop_prevented",
+                    **base_context,
+                },
+            )
+            return
+
         if not raw_text:
             logger.info(
                 "message_filtered",
@@ -590,6 +605,28 @@ class TelegramUserbot:
         if len(compact) <= limit:
             return compact
         return f"{compact[: max(0, limit - 3)]}..."
+
+    def _current_forward_target(self) -> str | int:
+        runtime_config = getattr(self.executor, "runtime_config", None)
+        if runtime_config is not None:
+            try:
+                return runtime_config.snapshot().forward_target
+            except Exception:
+                logger.exception("runtime_forward_target_read_failed")
+        return self.settings.forward_target
+
+    @staticmethod
+    def _is_target_match(target: str | int, chat_id: int, chat_username: str | None) -> bool:
+        resolved = ActionExecutor._resolve_forward_target(target)
+        if isinstance(resolved, int):
+            return chat_id == resolved
+        normalized_target = str(resolved).strip().lstrip("@").lower()
+        if not normalized_target or normalized_target in {"me", "self"}:
+            return False
+        normalized_chat_username = (chat_username or "").strip().lstrip("@").lower()
+        if not normalized_chat_username:
+            return False
+        return normalized_chat_username == normalized_target
 
 
 def build_userbot(
