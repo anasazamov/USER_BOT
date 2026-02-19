@@ -43,6 +43,22 @@ def test_publish_message_custom_status() -> None:
     assert "Status: Yangilandi" in message
 
 
+def test_publish_message_contains_sender_profile_link() -> None:
+    message = ActionExecutor.format_publish_message(
+        raw_text="Toshkentdan Samarqandga 1 kishi bor",
+        source_link="https://t.me/testgroup/445",
+        region_tag="#SamarqandViloyati",
+        sender_profile_link="https://t.me/user?id=123456789",
+    )
+    assert "Aloqa: https://t.me/user?id=123456789" in message
+
+
+def test_build_sender_profile_link_from_sender_id() -> None:
+    assert ActionExecutor._build_sender_profile_link(123456789) == "https://t.me/user?id=123456789"
+    assert ActionExecutor._build_sender_profile_link(None) == ""
+    assert ActionExecutor._build_sender_profile_link(-100123) == ""
+
+
 def test_execute_skips_rate_limit_when_limits_set_to_zero() -> None:
     class _Cooldown:
         def __init__(self) -> None:

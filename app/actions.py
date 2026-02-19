@@ -85,12 +85,14 @@ class ActionExecutor:
         if not self.bot_publisher:
             await self._human_pause()
         source_link = self._build_source_link(msg)
+        sender_profile_link = self._build_sender_profile_link(msg.envelope.sender_id)
         publish_key = (msg.envelope.chat_id, msg.envelope.message_id)
         existing_publish = self._published_order_map.get(publish_key)
         status_label = "Yangilandi" if existing_publish else "Yangi"
         outbound = self.format_publish_message(
             raw_text=msg.envelope.raw_text,
             source_link=source_link,
+            sender_profile_link=sender_profile_link,
             region_tag=decision.region_tag,
             status_label=status_label,
         )
@@ -272,10 +274,17 @@ class ActionExecutor:
         return ""
 
     @staticmethod
+    def _build_sender_profile_link(sender_id: int | None) -> str:
+        if not sender_id or sender_id <= 0:
+            return ""
+        return f"https://t.me/user?id={sender_id}"
+
+    @staticmethod
     def format_publish_message(
         raw_text: str,
         source_link: str,
         region_tag: str | None,
+        sender_profile_link: str = "",
         status_label: str = "Yangi",
     ) -> str:
         region = region_tag or "#Uzbekiston"
@@ -290,6 +299,8 @@ class ActionExecutor:
             lines.append(f"Manba: {source_link}")
         else:
             lines.append("Manba: private chat")
+        if sender_profile_link:
+            lines.append(f"Aloqa: {sender_profile_link}")
 
         message = "\n\n".join(lines)
         if len(message) <= 3900:
@@ -297,6 +308,8 @@ class ActionExecutor:
 
         # Keep room for region + status + source lines inside Telegram limits.
         tail = f"\n\n{region}\n\nStatus: {status_label}\n\nManba: {source_link or 'private chat'}"
+        if sender_profile_link:
+            tail += f"\n\nAloqa: {sender_profile_link}"
         head_limit = max(120, 3900 - len(tail) - 24)
         compact_body = (body[:head_limit] + "...") if len(body) > head_limit else body
         return f"Taxi buyurtma:\n\n{compact_body}{tail}"
