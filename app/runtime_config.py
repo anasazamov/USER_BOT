@@ -199,13 +199,13 @@ class RuntimeConfigService:
         if key == "min_text_length":
             return self._parse_int(raw, 4, 300)
         if key == "per_group_actions_hour":
-            return self._parse_int(raw, 1, 100)
+            return self._parse_int(raw, 0, 1000)
         if key == "per_group_replies_10m":
             return self._parse_int(raw, 0, 30)
         if key == "join_limit_day":
             return self._parse_int(raw, 0, 20)
         if key == "global_actions_minute":
-            return self._parse_int(raw, 1, 200)
+            return self._parse_int(raw, 0, 1000)
         if key == "min_human_delay_sec":
             return self._parse_float(raw, 0.2, 30.0)
         if key == "max_human_delay_sec":

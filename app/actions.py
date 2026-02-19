@@ -60,17 +60,21 @@ class ActionExecutor:
         forward_target = runtime.forward_target if runtime else self.settings.forward_target
 
         chat_id = msg.envelope.chat_id
-        allow_chat = await self.cooldown.allow_action(
-            chat_id,
-            "any",
-            per_group_actions_hour,
-            3600,
-        )
-        allow_global = await self.cooldown.allow_global(
-            "any",
-            global_actions_minute,
-            60,
-        )
+        allow_chat = True
+        if per_group_actions_hour > 0:
+            allow_chat = await self.cooldown.allow_action(
+                chat_id,
+                "any",
+                per_group_actions_hour,
+                3600,
+            )
+        allow_global = True
+        if global_actions_minute > 0:
+            allow_global = await self.cooldown.allow_global(
+                "any",
+                global_actions_minute,
+                60,
+            )
         if not (allow_chat and allow_global):
             logger.info(
                 "action_blocked_rate_limit",
@@ -78,7 +82,8 @@ class ActionExecutor:
             )
             return
 
-        await self._human_pause()
+        if not self.bot_publisher:
+            await self._human_pause()
         source_link = self._build_source_link(msg)
         publish_key = (msg.envelope.chat_id, msg.envelope.message_id)
         existing_publish = self._published_order_map.get(publish_key)

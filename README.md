@@ -162,6 +162,7 @@ Bot orqali publish:
 - `TG_BOT_TOKEN` berilsa buyurtmalar Telegram Bot API orqali yuboriladi.
 - Bot `FORWARD_TARGET` bo'lgan guruh/channelda admin bo'lishi kerak.
 - `BOT_ADMIN_USER_IDS` ichiga bot admin user ID larini yozing (masalan `12345,67890`).
+- `PER_GROUP_ACTIONS_HOUR=0` yoki `GLOBAL_ACTIONS_MINUTE=0` bersangiz mos limit o'chadi (tezroq real-time rejim).
 
 ### 4) Telegram userbot ishlash tartibi
 
