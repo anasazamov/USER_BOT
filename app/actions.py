@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
 import re
@@ -15,6 +16,11 @@ from app.runtime_config import RuntimeConfigService
 from app.storage.db import ActionRepository
 
 logger = logging.getLogger(__name__)
+
+_TME_CHAT_REF_RE = re.compile(
+    r"^(?:https?://)?t\.me/(?:(?:c/(?P<c_id>\d+)(?:/\d+)?)|(?P<username>[A-Za-z0-9_]+)(?:/\d+)?)/?$",
+    re.IGNORECASE,
+)
 
 
 class BotPublisher(Protocol):
@@ -57,7 +63,6 @@ class ActionExecutor:
         global_actions_minute = (
             runtime.global_actions_minute if runtime else self.settings.global_actions_minute
         )
-        forward_target = runtime.forward_target if runtime else self.settings.forward_target
 
         chat_id = msg.envelope.chat_id
         allow_chat = True
@@ -121,6 +126,7 @@ class ActionExecutor:
                         message=target_message_id,
                         text=outbound,
                         link_preview=False,
+                        parse_mode="html",
                     )
                 logger.info(
                     "publish_edit_ok",
@@ -148,7 +154,11 @@ class ActionExecutor:
                 await self.repository.insert_action(chat_id, msg.envelope.message_id, "publish_edit", "error")
                 self._published_order_map.pop(publish_key, None)
 
-        target_entity = self._resolve_forward_target(forward_target)
+        target_entity = self.resolve_forward_target_for_chat(
+            chat_id=msg.envelope.chat_id,
+            chat_username=msg.envelope.chat_username,
+            runtime_snapshot=runtime,
+        )
         logger.info(
             "publish_attempt",
             extra={
@@ -166,6 +176,7 @@ class ActionExecutor:
                 entity=target_entity,
                 message=outbound,
                 link_preview=False,
+                parse_mode="html",
             )
             sent_message_id = int(getattr(sent_message, "id", 0) or 0)
         if sent_message_id > 0:
@@ -253,14 +264,87 @@ class ActionExecutor:
             return runtime.min_human_delay_sec, runtime.max_human_delay_sec
         return self.settings.min_human_delay_sec, self.settings.max_human_delay_sec
 
+    def resolve_forward_target_for_chat(
+        self,
+        chat_id: int,
+        chat_username: str | None,
+        runtime_snapshot: object | None = None,
+    ) -> str | int:
+        runtime = runtime_snapshot if runtime_snapshot is not None else (
+            self.runtime_config.snapshot() if self.runtime_config else None
+        )
+        default_target = runtime.forward_target if runtime else self.settings.forward_target
+        second_target = (self.settings.forward_target_2 or "").strip()
+        if second_target:
+            for source_ref in self.settings.priority_group_links_2:
+                if self._is_source_route_match(source_ref, chat_id=chat_id, chat_username=chat_username):
+                    return self._resolve_forward_target(second_target)
+
+        return self._resolve_forward_target(default_target)
+
     @staticmethod
     def _resolve_forward_target(target: str | int) -> str | int:
         if isinstance(target, int):
             return target
         value = str(target).strip()
+        parsed_tme_ref = ActionExecutor._parse_tme_chat_ref(value)
+        if parsed_tme_ref is not None:
+            value = parsed_tme_ref
+            if isinstance(value, int):
+                return value
         if re.fullmatch(r"-?\d+", value):
             return int(value)
         return value
+
+    @staticmethod
+    def _parse_tme_chat_ref(value: str) -> str | int | None:
+        match = _TME_CHAT_REF_RE.fullmatch((value or "").strip())
+        if not match:
+            return None
+        c_id = match.group("c_id")
+        if c_id:
+            return int(f"-100{c_id}")
+        username = (match.group("username") or "").strip()
+        if not username:
+            return None
+        lowered = username.lower()
+        if lowered in {"joinchat"} or username.startswith("+"):
+            return None
+        return f"@{username}"
+
+    @classmethod
+    def _is_source_route_match(
+        cls,
+        source: str,
+        chat_id: int,
+        chat_username: str | None,
+    ) -> bool:
+        normalized_source = cls._normalize_source_route_value(source)
+        if normalized_source is None:
+            return False
+        if isinstance(normalized_source, int):
+            return chat_id == normalized_source
+        normalized_chat_username = (chat_username or "").strip().lstrip("@").lower()
+        if not normalized_chat_username:
+            return False
+        return normalized_chat_username == normalized_source
+
+    @classmethod
+    def _normalize_source_route_value(cls, value: str | int) -> str | int | None:
+        if isinstance(value, int):
+            return value
+        raw = str(value).strip()
+        if not raw:
+            return None
+        parsed_tme_ref = cls._parse_tme_chat_ref(raw)
+        if parsed_tme_ref is not None:
+            if isinstance(parsed_tme_ref, int):
+                return parsed_tme_ref
+            raw = parsed_tme_ref
+        if re.fullmatch(r"-?\d+", raw):
+            return int(raw)
+        normalized = raw.lstrip("@").strip().lower()
+        return normalized or None
 
     def _build_source_link(self, msg: NormalizedMessage) -> str:
         username = (msg.envelope.chat_username or "").strip().lstrip("@")
@@ -277,7 +361,7 @@ class ActionExecutor:
     def _build_sender_profile_link(sender_id: int | None) -> str:
         if not sender_id or sender_id <= 0:
             return ""
-        return f"https://t.me/user?id={sender_id}"
+        return f"tg://user?id={sender_id}"
 
     @staticmethod
     def format_publish_message(
@@ -289,27 +373,29 @@ class ActionExecutor:
     ) -> str:
         region = region_tag or "#Uzbekiston"
         body = (raw_text or "").strip() or "(matn topilmadi)"
+        source_value = source_link or "private chat"
+
+        # Limit based on visible/plain text length and keep headroom for HTML tags.
+        tail_plain = f"\n\n{region}\n\nStatus: {status_label}\n\nManba: {source_value}"
+        if sender_profile_link:
+            tail_plain += "\n\nAloqa: profil"
+        head_limit = max(120, 3900 - len(tail_plain) - 24)
+        compact_body = (body[:head_limit] + "...") if len(body) > head_limit else body
+
         lines = [
-            "Taxi buyurtma:",
-            body,
-            region,
-            f"Status: {status_label}",
+            "<b>Taxi buyurtma:</b>",
+            html.escape(compact_body, quote=False),
+            html.escape(region, quote=False),
+            f"<b>Status:</b> {html.escape(status_label, quote=False)}",
         ]
         if source_link:
-            lines.append(f"Manba: {source_link}")
+            safe_source_href = html.escape(source_link, quote=True)
+            safe_source_text = html.escape(source_link, quote=False)
+            lines.append(f'Manba: <a href="{safe_source_href}">{safe_source_text}</a>')
         else:
             lines.append("Manba: private chat")
         if sender_profile_link:
-            lines.append(f"Aloqa: {sender_profile_link}")
+            safe_sender_href = html.escape(sender_profile_link, quote=True)
+            lines.append(f'Aloqa: <a href="{safe_sender_href}">Profilga o&apos;tish</a>')
 
-        message = "\n\n".join(lines)
-        if len(message) <= 3900:
-            return message
-
-        # Keep room for region + status + source lines inside Telegram limits.
-        tail = f"\n\n{region}\n\nStatus: {status_label}\n\nManba: {source_link or 'private chat'}"
-        if sender_profile_link:
-            tail += f"\n\nAloqa: {sender_profile_link}"
-        head_limit = max(120, 3900 - len(tail) - 24)
-        compact_body = (body[:head_limit] + "...") if len(body) > head_limit else body
-        return f"Taxi buyurtma:\n\n{compact_body}{tail}"
+        return "\n\n".join(lines)

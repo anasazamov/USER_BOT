@@ -21,6 +21,9 @@ Tavsiya etiladi:
 
 - `DATABASE_URL`
 - `FORWARD_TARGET`
+- `FORWARD_TARGET2`
+- `PRIORITY_GROUP_LINKS`
+- `PRIORITY_GROUP_LINKS_2`
 - `OWNER_USER_ID`
 - `TG_BOT_TOKEN`
 - `BOT_ADMIN_USER_IDS`
@@ -146,6 +149,10 @@ Web UI orqali:
 Public guruh/channel:
 
 - `FORWARD_TARGET=@group_username`
+- `FORWARD_TARGET2=@group_username` (2-guruhlar to'plami uchun)
+- `PRIORITY_GROUP_LINKS` dagi source guruhlardan kelgan xabarlar `FORWARD_TARGET` ga yuboriladi.
+- `PRIORITY_GROUP_LINKS_2` dagi source guruhlardan kelgan xabarlar `FORWARD_TARGET2` ga yuboriladi.
+- `PRIORITY_GROUP_LINKS_2` ichida source sifatida `@username`, `t.me/username`, `-100...`, `t.me/c/...` ishlatish mumkin.
 
 Private guruh:
 
@@ -160,7 +167,7 @@ Private guruh `id` ni olish:
 Bot orqali publish:
 
 - `TG_BOT_TOKEN` berilsa buyurtmalar Telegram Bot API orqali yuboriladi.
-- Bot `FORWARD_TARGET` bo'lgan guruh/channelda admin bo'lishi kerak.
+- Bot `FORWARD_TARGET` va `FORWARD_TARGET2` target guruhlarda admin bo'lishi kerak.
 - `BOT_ADMIN_USER_IDS` ichiga bot admin user ID larini yozing (masalan `12345,67890`).
 - `PER_GROUP_ACTIONS_HOUR=0` yoki `GLOBAL_ACTIONS_MINUTE=0` bersangiz mos limit o'chadi (tezroq real-time rejim).
 

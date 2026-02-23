@@ -60,6 +60,7 @@ class TelegramManagementBot:
         payload = {
             "chat_id": chat_id,
             "text": text,
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
         result = await self._api_call("sendMessage", payload)
@@ -70,6 +71,7 @@ class TelegramManagementBot:
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
+            "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
         await self._api_call("editMessageText", payload)

@@ -38,6 +38,7 @@ class Settings:
     owner_user_id: Optional[int] = None
 
     forward_target: str = "me"
+    forward_target_2: Optional[str] = None
     min_text_length: int = 18
 
     per_group_actions_hour: int = 15
@@ -86,6 +87,7 @@ class Settings:
         "https://t.me/urguttoshkint",
         "t.me/Toshkent_samarqan_taksi",
     )
+    priority_group_links_2: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -114,6 +116,7 @@ class Settings:
             queue_max_size=int(os.environ.get("QUEUE_MAX_SIZE", "2000")),
             owner_user_id=owner_user_id,
             forward_target=os.environ.get("FORWARD_TARGET", "me"),
+            forward_target_2=(os.environ.get("FORWARD_TARGET2") or "").strip() or None,
             min_text_length=int(os.environ.get("MIN_TEXT_LENGTH", "18")),
             per_group_actions_hour=int(os.environ.get("PER_GROUP_ACTIONS_HOUR", "15")),
             per_group_replies_10m=int(os.environ.get("PER_GROUP_REPLIES_10M", "3")),
@@ -158,6 +161,11 @@ class Settings:
                         "https://t.me/urguttoshkint,t.me/Toshkent_samarqan_taksi"
                     ),
                 ).split(",")
+                if q.strip()
+            ),
+            priority_group_links_2=tuple(
+                q.strip()
+                for q in os.environ.get("PRIORITY_GROUP_LINKS_2", "").split(",")
                 if q.strip()
             ),
         )

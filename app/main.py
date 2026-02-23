@@ -50,13 +50,19 @@ async def main() -> None:
             ),
         },
     )
-    seeded_public, seeded_private = await seed_priority_groups(repository, settings.priority_group_links)
+    seeded_public_1, seeded_private_1 = await seed_priority_groups(repository, settings.priority_group_links)
+    seeded_public_2, seeded_private_2 = await seed_priority_groups(repository, settings.priority_group_links_2)
+    seeded_public = seeded_public_1 + seeded_public_2
+    seeded_private = seeded_private_1 + seeded_private_2
     if seeded_public or seeded_private:
         logger.info(
             "priority_groups_seeded",
             extra={
                 "action": "startup_seed",
-                "reason": "priority_groups",
+                "reason": (
+                    f"priority_groups_1={len(settings.priority_group_links)} "
+                    f"priority_groups_2={len(settings.priority_group_links_2)}"
+                ),
                 "count": seeded_public + seeded_private,
             },
         )
