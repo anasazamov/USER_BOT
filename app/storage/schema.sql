@@ -97,5 +97,27 @@ CREATE TABLE IF NOT EXISTS bot_subscribers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE bot_subscribers
+    ADD COLUMN IF NOT EXISTS subscription_status TEXT NOT NULL DEFAULT 'active';
+
+ALTER TABLE bot_subscribers
+    ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
+
+ALTER TABLE bot_subscribers
+    ADD COLUMN IF NOT EXISTS subscription_reminder_sent_at TIMESTAMPTZ;
+
+ALTER TABLE bot_subscribers
+    ADD COLUMN IF NOT EXISTS approved_by_admin_id BIGINT;
+
+ALTER TABLE bot_subscribers
+    ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+
+UPDATE bot_subscribers
+SET subscription_status = CASE WHEN active THEN 'active' ELSE 'inactive' END
+WHERE subscription_status IS NULL
+   OR subscription_status = '';
+
 CREATE INDEX IF NOT EXISTS idx_bot_subscribers_active ON bot_subscribers (active);
 CREATE INDEX IF NOT EXISTS idx_bot_subscribers_updated_at ON bot_subscribers (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bot_subscribers_status ON bot_subscribers (subscription_status);
+CREATE INDEX IF NOT EXISTS idx_bot_subscribers_expires_at ON bot_subscribers (subscription_expires_at);

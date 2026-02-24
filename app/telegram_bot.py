@@ -46,6 +46,7 @@ class TelegramUserbot:
         self.keyword_service = keyword_service
         self._owner_user_id = settings.owner_user_id
         self._chat_last_seen: dict[int, int] = {}
+        self._chat_last_read_ack: dict[int, int] = {}
         self._dirty_chat_states: set[int] = set()
         self._history_task: asyncio.Task[None] | None = None
         self._history_stop = asyncio.Event()
@@ -67,10 +68,13 @@ class TelegramUserbot:
                 await self._discover_private_invites(raw_text, int(event.chat_id))
             if event.is_private:
                 return
+            sender_username, sender_name = self._extract_sender_identity_from_event(event)
             await self._ingest_message(
                 chat_id=int(event.chat_id),
                 message_id=int(getattr(event, "id", 0)),
                 sender_id=event.sender_id,
+                sender_username=sender_username,
+                sender_name=sender_name,
                 raw_text=raw_text,
                 chat_username=getattr(getattr(event, "chat", None), "username", None),
                 chat_title=getattr(getattr(event, "chat", None), "title", None),
@@ -150,6 +154,8 @@ class TelegramUserbot:
         chat_id: int,
         message_id: int,
         sender_id: int | None,
+        sender_username: str | None,
+        sender_name: str | None,
         raw_text: str,
         chat_username: str | None,
         chat_title: str | None,
@@ -165,6 +171,8 @@ class TelegramUserbot:
             raw_text=raw_text,
         )
         self._mark_chat_seen(chat_id, message_id)
+        if source in {"realtime", "edited"}:
+            await self._acknowledge_chat_read(chat_id, message_id, source=source)
         logger.info(
             "message_received",
             extra={
@@ -250,6 +258,8 @@ class TelegramUserbot:
             message_id=message_id,
             sender_id=sender_id,
             raw_text=raw_text,
+            sender_username=sender_username,
+            sender_name=sender_name,
             chat_username=chat_username,
             chat_title=chat_title,
         )
@@ -353,6 +363,8 @@ class TelegramUserbot:
                 chat_id=chat_id,
                 message_id=message_id,
                 sender_id=getattr(message, "sender_id", None),
+                sender_username=self._extract_sender_username_from_message(message),
+                sender_name=self._extract_sender_name_from_message(message),
                 raw_text=raw_text,
                 chat_username=chat_username,
                 chat_title=chat_title,
@@ -362,6 +374,8 @@ class TelegramUserbot:
 
         if max_seen > last_seen:
             self._mark_chat_seen(chat_id, max_seen)
+            if source == "history":
+                await self._acknowledge_chat_read(chat_id, max_seen, source=source)
 
         logger.info(
             "history_chat_scanned",
@@ -434,6 +448,27 @@ class TelegramUserbot:
                 logger.exception("chat_read_state_flush_failed", extra={"chat_id": chat_id})
         if flushed:
             logger.info("chat_read_state_flushed", extra={"action": "state_flush", "count": flushed})
+
+    async def _acknowledge_chat_read(self, chat_id: int, message_id: int, source: str) -> None:
+        if message_id <= 0:
+            return
+        previous = self._chat_last_read_ack.get(chat_id, 0)
+        if message_id <= previous:
+            return
+        try:
+            await self.client.send_read_acknowledge(chat_id, max_id=message_id, clear_mentions=True)
+            self._chat_last_read_ack[chat_id] = message_id
+        except Exception:
+            logger.debug(
+                "chat_read_ack_failed",
+                extra={
+                    "action": "read_ack",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                },
+                exc_info=True,
+            )
 
     async def _process_message(self, msg: NormalizedMessage) -> None:
         decision = self.decision_engine.decide(msg)
@@ -576,6 +611,44 @@ class TelegramUserbot:
             if file_name:
                 return str(file_name)
         return ""
+
+    @staticmethod
+    def _extract_sender_identity_from_event(event: events.common.EventCommon) -> tuple[str | None, str | None]:
+        sender = getattr(event, "sender", None)
+        if sender is None:
+            sender = getattr(getattr(event, "message", None), "sender", None)
+        return (
+            TelegramUserbot._sanitize_sender_username(getattr(sender, "username", None)),
+            TelegramUserbot._build_sender_name(
+                getattr(sender, "first_name", None),
+                getattr(sender, "last_name", None),
+            ),
+        )
+
+    @staticmethod
+    def _extract_sender_username_from_message(message: object) -> str | None:
+        sender = getattr(message, "sender", None)
+        return TelegramUserbot._sanitize_sender_username(getattr(sender, "username", None))
+
+    @staticmethod
+    def _extract_sender_name_from_message(message: object) -> str | None:
+        sender = getattr(message, "sender", None)
+        return TelegramUserbot._build_sender_name(
+            getattr(sender, "first_name", None),
+            getattr(sender, "last_name", None),
+        )
+
+    @staticmethod
+    def _sanitize_sender_username(value: object) -> str | None:
+        username = str(value or "").strip().lstrip("@")
+        return username or None
+
+    @staticmethod
+    def _build_sender_name(first_name: object, last_name: object) -> str | None:
+        first = str(first_name or "").strip()
+        last = str(last_name or "").strip()
+        full = " ".join(part for part in (first, last) if part)
+        return full or None
 
     @classmethod
     def _build_message_log_context(

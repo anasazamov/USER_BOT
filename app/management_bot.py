@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import ClientSession, ClientTimeout
@@ -23,11 +25,20 @@ class TelegramManagementBot:
         self.poll_timeout_sec = max(5, int(settings.bot_poll_timeout_sec))
         self.broadcast_enabled = bool(settings.bot_broadcast_subscribers)
         self.admin_user_ids = set(settings.bot_admin_user_ids)
+        self.paid_subscription_enabled = bool(settings.bot_paid_subscription_enabled)
+        self.subscription_default_days = max(1, int(settings.bot_subscription_default_days))
+        self.subscription_reminder_hours = max(1, int(settings.bot_subscription_reminder_hours))
+        self.subscription_check_interval_sec = max(30, int(settings.bot_subscription_check_interval_sec))
+        self.managed_private_group_ids = set(int(v) for v in settings.bot_managed_private_group_ids)
+        self.auto_approve_join_requests = bool(settings.bot_auto_approve_join_requests)
+        self.decline_unpaid_join_requests = bool(settings.bot_decline_unpaid_join_requests)
+        self.remove_expired_from_groups = bool(settings.bot_remove_expired_from_groups)
         self._api_base = f"https://api.telegram.org/bot{self.token}"
         self._offset = 0
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._session: ClientSession | None = None
+        self._last_subscription_maintenance_monotonic = 0.0
 
     async def start(self) -> None:
         if self._task:
@@ -40,7 +51,9 @@ class TelegramManagementBot:
                 "action": "bot_manage",
                 "reason": (
                     f"admins={len(self.admin_user_ids)} "
-                    f"broadcast_subscribers={self.broadcast_enabled}"
+                    f"broadcast_subscribers={self.broadcast_enabled} "
+                    f"paid_subscription={self.paid_subscription_enabled} "
+                    f"managed_private_groups={len(self.managed_private_group_ids)}"
                 ),
             },
         )
@@ -96,12 +109,14 @@ class TelegramManagementBot:
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                await self._maybe_run_subscription_maintenance()
                 updates = await self._fetch_updates()
                 for update in updates:
                     update_id = int(update.get("update_id", 0) or 0)
                     if update_id > 0:
                         self._offset = update_id + 1
                     await self._handle_update(update)
+                await self._maybe_run_subscription_maintenance()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -112,7 +127,7 @@ class TelegramManagementBot:
         payload = {
             "timeout": self.poll_timeout_sec,
             "offset": self._offset,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "chat_join_request"],
         }
         result = await self._api_call("getUpdates", payload)
         if isinstance(result, list):
@@ -120,6 +135,11 @@ class TelegramManagementBot:
         return []
 
     async def _handle_update(self, update: dict[str, Any]) -> None:
+        join_request = update.get("chat_join_request")
+        if isinstance(join_request, dict):
+            await self._handle_chat_join_request(join_request)
+            return
+
         message = update.get("message")
         if not isinstance(message, dict):
             return
@@ -140,14 +160,23 @@ class TelegramManagementBot:
 
         command, arg = self._parse_command(text)
         if command in {"start", "subscribe"} and chat_type == "private":
+            existing = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
+            keep_active = bool(existing and self._has_active_access(existing))
             await self.repository.upsert_bot_subscriber(
                 user_id=user_id,
                 chat_id=chat_id,
                 username=username,
                 first_name=first_name,
-                active=True,
+                active=keep_active or (not self.paid_subscription_enabled),
             )
-            await self.send_message(chat_id, self._welcome_text())
+            if self.paid_subscription_enabled and not keep_active:
+                await self.repository.mark_bot_subscriber_pending(user_id)
+                await self.send_message(
+                    chat_id,
+                    self._welcome_pending_text(default_days=self.subscription_default_days),
+                )
+            else:
+                await self.send_message(chat_id, self._welcome_text())
             return
 
         if command in {"stop", "unsubscribe"} and chat_type == "private":
@@ -161,6 +190,11 @@ class TelegramManagementBot:
                     active=False,
                 )
             await self.send_message(chat_id, "Obuna to'xtatildi. Qayta yoqish: /start")
+            return
+
+        if command == "status" and chat_type == "private":
+            subscriber = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
+            await self.send_message(chat_id, self._build_subscriber_status_text(subscriber))
             return
 
         if command == "help":
@@ -181,12 +215,55 @@ class TelegramManagementBot:
             await self.send_message(chat_id, await self._build_subscribers_text())
             return
 
+        if command == "pending":
+            if not self._is_admin(user_id):
+                await self.send_message(chat_id, "Ruxsat yo'q.")
+                return
+            await self.send_message(chat_id, await self._build_pending_subscribers_text())
+            return
+
+        if command in {"approve", "extend"}:
+            if not self._is_admin(user_id):
+                await self.send_message(chat_id, "Ruxsat yo'q.")
+                return
+            target_user_id, days = self._parse_admin_extend_args(arg, self.subscription_default_days)
+            if target_user_id is None:
+                await self.send_message(
+                    chat_id,
+                    "Format: /approve (user_id) [kun]\nFormat: /extend (user_id) (kun)",
+                )
+                return
+            subscriber = await self.repository.activate_or_extend_bot_subscriber_subscription(
+                user_id=target_user_id,
+                days=days,
+                admin_user_id=user_id,
+            )
+            if subscriber is None:
+                await self.send_message(chat_id, "Subscriber topilmadi. Avval user /start bossin.")
+                return
+            await self.send_message(chat_id, self._build_admin_extend_result_text(subscriber, days))
+            if subscriber.chat_id:
+                with suppress(Exception):
+                    await self.send_message(
+                        subscriber.chat_id,
+                        self._subscription_approved_user_text(subscriber, days),
+                    )
+            return
+
+        if command in {"checksubs", "subcheck"}:
+            if not self._is_admin(user_id):
+                await self.send_message(chat_id, "Ruxsat yo'q.")
+                return
+            await self._run_subscription_maintenance()
+            await self.send_message(chat_id, "Subscription tekshiruvi ishga tushirildi.")
+            return
+
         if command == "broadcast":
             if not self._is_admin(user_id):
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             if not arg:
-                await self.send_message(chat_id, "Matn bering: /broadcast <xabar>")
+                await self.send_message(chat_id, "Matn bering: /broadcast (xabar)")
                 return
             sent, failed = await self.broadcast_to_subscribers(arg)
             await self.send_message(chat_id, f"Broadcast yakunlandi. Sent={sent} Failed={failed}")
@@ -221,11 +298,54 @@ class TelegramManagementBot:
             lines.append(self._subscriber_line(subscriber))
         return "\n".join(lines)
 
-    @staticmethod
-    def _subscriber_line(subscriber: BotSubscriber) -> str:
+    async def _build_pending_subscribers_text(self) -> str:
+        subscribers = await self.repository.fetch_pending_bot_subscribers(limit=20)
+        if not subscribers:
+            return "Pending subscriberlar yo'q."
+        lines = ["Pending subscriberlar (oxirgi 20 ta):"]
+        for subscriber in subscribers:
+            lines.append(self._subscriber_line(subscriber))
+        return "\n".join(lines)
+
+    def _subscriber_line(self, subscriber: BotSubscriber) -> str:
         username = f"@{subscriber.username}" if subscriber.username else "-"
-        status = "active" if subscriber.active else "inactive"
-        return f"{subscriber.user_id} {username} {status}"
+        status = subscriber.subscription_status or ("active" if subscriber.active else "inactive")
+        expires = self._format_expiry_short(subscriber.subscription_expires_at)
+        return f"{subscriber.user_id} {username} status={status} expires={expires}"
+
+    def _build_subscriber_status_text(self, subscriber: BotSubscriber | None) -> str:
+        if subscriber is None:
+            return "Siz hali ro'yxatdan o'tmagansiz. /start bosing."
+        active_text = "ha" if subscriber.active else "yo'q"
+        lines = [
+            "Obuna holati:",
+            f"Status: {subscriber.subscription_status}",
+            f"Active: {active_text}",
+        ]
+        if subscriber.subscription_expires_at:
+            lines.append(f"Tugash vaqti: {self._format_expiry_human(subscriber.subscription_expires_at)}")
+            remaining = self._remaining_hours_text(subscriber.subscription_expires_at)
+            if remaining:
+                lines.append(f"Qolgan vaqt: {remaining}")
+        else:
+            lines.append("Tugash vaqti: belgilanmagan")
+        if self.paid_subscription_enabled and not self._has_active_access(subscriber):
+            lines.append("To'lov tasdiqlangach admin obunangizni faollashtiradi.")
+        return "\n".join(lines)
+
+    def _build_admin_extend_result_text(self, subscriber: BotSubscriber, days: int) -> str:
+        username = f" @{subscriber.username}" if subscriber.username else ""
+        expires = self._format_expiry_human(subscriber.subscription_expires_at)
+        return f"Faollashtirildi/uzaytirildi: {subscriber.user_id}{username}\n+{days} kun\nTugash: {expires}"
+
+    def _subscription_approved_user_text(self, subscriber: BotSubscriber, days: int) -> str:
+        expires = self._format_expiry_human(subscriber.subscription_expires_at)
+        return (
+            "Obunangiz tasdiqlandi.\n"
+            f"Uzaytirish: +{days} kun\n"
+            f"Tugash vaqti: {expires}\n"
+            "Status tekshirish: /status"
+        )
 
     def _is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_user_ids
@@ -241,25 +361,120 @@ class TelegramManagementBot:
         return command.lower(), arg
 
     @staticmethod
+    def _parse_admin_extend_args(arg: str, default_days: int) -> tuple[int | None, int]:
+        parts = [p for p in (arg or "").split() if p]
+        if not parts:
+            return (None, default_days)
+        try:
+            user_id = int(parts[0])
+        except ValueError:
+            return (None, default_days)
+        days = default_days
+        if len(parts) > 1:
+            raw_days = parts[1].strip().lower().rstrip("d")
+            try:
+                days = int(raw_days)
+            except ValueError:
+                return (None, default_days)
+        if user_id <= 0 or days <= 0 or days > 3650:
+            return (None, default_days)
+        return (user_id, days)
+
+    def _has_active_access(self, subscriber: BotSubscriber | None) -> bool:
+        if subscriber is None or not subscriber.active:
+            return False
+        if not self.paid_subscription_enabled:
+            return True
+        if subscriber.subscription_status != "active":
+            return False
+        expires = self._parse_datetime(subscriber.subscription_expires_at)
+        if expires is None:
+            return False
+        return expires > datetime.now(UTC)
+
+    @staticmethod
+    def _parse_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    @classmethod
+    def _format_expiry_short(cls, value: str | None) -> str:
+        dt = cls._parse_datetime(value)
+        if dt is None:
+            return "-"
+        return dt.strftime("%Y-%m-%d")
+
+    @classmethod
+    def _format_expiry_human(cls, value: str | None) -> str:
+        dt = cls._parse_datetime(value)
+        if dt is None:
+            return "belgilanmagan"
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+    @classmethod
+    def _remaining_hours_text(cls, value: str | None) -> str:
+        dt = cls._parse_datetime(value)
+        if dt is None:
+            return ""
+        remaining_sec = int((dt - datetime.now(UTC)).total_seconds())
+        if remaining_sec <= 0:
+            return "muddat tugagan"
+        hours = remaining_sec // 3600
+        days = hours // 24
+        rem_hours = hours % 24
+        if days > 0:
+            return f"{days} kun {rem_hours} soat"
+        return f"{max(1, hours)} soat"
+
+    @staticmethod
     def _welcome_text() -> str:
         return (
             "Obuna muvaffaqiyatli yoqildi.\n"
             "Buyruqlar:\n"
             "/start - obunani yoqish\n"
             "/stop - obunani to'xtatish\n"
+            "/status - holatni ko'rish\n"
             "/help - yordam"
         )
 
     @staticmethod
-    def _help_text() -> str:
+    def _welcome_pending_text(default_days: int) -> str:
+        return (
+            "So'rovingiz qabul qilindi.\n"
+            "Paid obuna yoqilgan: admin to'lovni tasdiqlagach guruhga ruxsat beriladi.\n"
+            f"Standart muddat: {default_days} kun.\n"
+            "Holat: /status"
+        )
+
+    def _help_text(self) -> str:
+        admin_lines = [
+            "/stats (admin)",
+            "/subscribers (admin)",
+            "/pending (admin)",
+            f"/approve (user_id) [kun] (admin, default={self.subscription_default_days})",
+            "/extend (user_id) (kun) (admin)",
+            "/checksubs (admin)",
+            "/broadcast (text) (admin, BOT_BROADCAST_SUBSCRIBERS=true bo'lsa ishlaydi)",
+        ]
         return (
             "Buyruqlar:\n"
             "/start\n"
             "/stop\n"
+            "/status\n"
             "/help\n"
-            "/stats (admin)\n"
-            "/subscribers (admin)\n"
-            "/broadcast <text> (admin, BOT_BROADCAST_SUBSCRIBERS=true bo'lsa ishlaydi)"
+            + "\n".join(admin_lines)
         )
 
     @staticmethod
@@ -270,6 +485,154 @@ class TelegramManagementBot:
             or "chat not found" in lowered
             or "forbidden" in lowered
             or "user is deactivated" in lowered
+        )
+
+    async def _maybe_run_subscription_maintenance(self) -> None:
+        if not self.paid_subscription_enabled:
+            return
+        now_mono = time.monotonic()
+        if (
+            self._last_subscription_maintenance_monotonic > 0
+            and now_mono - self._last_subscription_maintenance_monotonic < self.subscription_check_interval_sec
+        ):
+            return
+        self._last_subscription_maintenance_monotonic = now_mono
+        await self._run_subscription_maintenance()
+
+    async def _run_subscription_maintenance(self) -> None:
+        if not self.paid_subscription_enabled:
+            return
+        expired = await self.repository.expire_due_bot_subscribers(limit=200)
+        for subscriber in expired:
+            with suppress(Exception):
+                await self.send_message(subscriber.chat_id, self._subscription_expired_text())
+            if self.remove_expired_from_groups and self.managed_private_group_ids:
+                await self._remove_user_from_managed_groups(subscriber.user_id)
+        reminders = await self.repository.fetch_expiring_bot_subscribers(
+            reminder_hours=self.subscription_reminder_hours,
+            limit=200,
+        )
+        for subscriber in reminders:
+            try:
+                await self.send_message(subscriber.chat_id, self._subscription_expiring_text(subscriber))
+                await self.repository.mark_bot_subscriber_reminder_sent(subscriber.user_id)
+            except Exception:
+                logger.exception(
+                    "subscription_reminder_send_failed",
+                    extra={"chat_id": subscriber.chat_id, "user_id": subscriber.user_id},
+                )
+        if expired or reminders:
+            logger.info(
+                "subscription_maintenance_done",
+                extra={
+                    "action": "subscription_maintenance",
+                    "count": len(reminders),
+                    "reason": f"expired={len(expired)}",
+                },
+            )
+
+    async def _handle_chat_join_request(self, payload: dict[str, Any]) -> None:
+        chat = payload.get("chat") or {}
+        user = payload.get("from") or {}
+        chat_id = int(chat.get("id") or 0)
+        user_id = int(user.get("id") or 0)
+        if chat_id == 0 or user_id <= 0:
+            return
+        if self.managed_private_group_ids and chat_id not in self.managed_private_group_ids:
+            return
+
+        username = user.get("username")
+        first_name = user.get("first_name")
+        user_chat_id = int(payload.get("user_chat_id") or user_id)
+        existing = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
+        upsert_active = existing.active if existing is not None else (not self.paid_subscription_enabled)
+        with suppress(Exception):
+            await self.repository.upsert_bot_subscriber(
+                user_id=user_id,
+                chat_id=user_chat_id,
+                username=username,
+                first_name=first_name,
+                active=upsert_active,
+            )
+
+        if not self.paid_subscription_enabled:
+            if self.auto_approve_join_requests:
+                await self._approve_chat_join_request(chat_id, user_id)
+            return
+
+        subscriber = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
+        if self._has_active_access(subscriber):
+            if self.auto_approve_join_requests:
+                await self._approve_chat_join_request(chat_id, user_id)
+            with suppress(Exception):
+                await self.send_message(user_chat_id, "Join request tasdiqlandi. Xush kelibsiz.")
+            return
+
+        # Paid obuna yoqilgan va userda aktiv muddat yo'q.
+        with suppress(Exception):
+            await self.repository.mark_bot_subscriber_pending(user_id)
+        if self.decline_unpaid_join_requests:
+            with suppress(Exception):
+                await self._decline_chat_join_request(chat_id, user_id)
+        with suppress(Exception):
+            await self.send_message(user_chat_id, self._join_request_rejected_text())
+
+    async def _approve_chat_join_request(self, chat_id: int, user_id: int) -> None:
+        await self._api_call("approveChatJoinRequest", {"chat_id": chat_id, "user_id": user_id})
+
+    async def _decline_chat_join_request(self, chat_id: int, user_id: int) -> None:
+        await self._api_call("declineChatJoinRequest", {"chat_id": chat_id, "user_id": user_id})
+
+    async def _remove_user_from_managed_groups(self, user_id: int) -> None:
+        for group_id in self.managed_private_group_ids:
+            try:
+                await self._api_call(
+                    "banChatMember",
+                    {
+                        "chat_id": group_id,
+                        "user_id": user_id,
+                        "revoke_messages": False,
+                    },
+                )
+                await self._api_call(
+                    "unbanChatMember",
+                    {
+                        "chat_id": group_id,
+                        "user_id": user_id,
+                        "only_if_banned": True,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "managed_group_remove_failed",
+                    extra={"action": "group_remove", "chat_id": group_id, "user_id": user_id},
+                )
+            await asyncio.sleep(0.05)
+
+    def _subscription_expiring_text(self, subscriber: BotSubscriber) -> str:
+        remaining = self._remaining_hours_text(subscriber.subscription_expires_at)
+        expires = self._format_expiry_human(subscriber.subscription_expires_at)
+        return (
+            "Obuna muddati tugashiga oz qoldi.\n"
+            f"Tugash vaqti: {expires}\n"
+            f"Qolgan vaqt: {remaining}\n"
+            "To'lovni yangilash uchun admin bilan bog'laning."
+        )
+
+    @staticmethod
+    def _subscription_expired_text() -> str:
+        return (
+            "Obuna muddati tugadi.\n"
+            "Private guruhga kirish cheklanadi.\n"
+            "Qayta faollashtirish uchun admin bilan bog'laning yoki /start yuboring."
+        )
+
+    @staticmethod
+    def _join_request_rejected_text() -> str:
+        return (
+            "Join request qabul qilinmadi.\n"
+            "Sabab: aktiv paid obuna topilmadi.\n"
+            "Avval /start yuboring va to'lov tasdiqlanishini kuting."
         )
 
     async def _api_call(self, method: str, payload: dict[str, Any]) -> Any:

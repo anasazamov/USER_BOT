@@ -55,7 +55,18 @@ def test_publish_message_contains_sender_profile_link() -> None:
         region_tag="#SamarqandViloyati",
         sender_profile_link="tg://user?id=123456789",
     )
-    assert 'Aloqa: <a href="tg://user?id=123456789">Profilga o&apos;tish</a>' in message
+    assert 'Aloqa: <a href="tg://user?id=123456789">Profilga o\'tish</a>' in message
+
+
+def test_publish_message_uses_sender_username_as_link_text() -> None:
+    message = ActionExecutor.format_publish_message(
+        raw_text="Toshkentdan Samarqandga 1 kishi bor",
+        source_link="https://t.me/testgroup/445",
+        region_tag="#SamarqandViloyati",
+        sender_profile_link="tg://user?id=123456789",
+        sender_profile_text="@azizbek",
+    )
+    assert 'Aloqa: <a href="tg://user?id=123456789">@azizbek</a>' in message
 
 
 def test_build_sender_profile_link_from_sender_id() -> None:
@@ -248,4 +259,57 @@ def test_resolve_forward_target_for_chat_uses_priority_group_links_2_numeric_cha
     assert (
         executor.resolve_forward_target_for_chat(chat_id=-1001234567890, chat_username=None)
         == -1002223334445
+    )
+
+
+def test_resolve_forward_target_for_chat_uses_private_invite_source_cache() -> None:
+    class _Cooldown:
+        async def allow_action(self, chat_id: int, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_global(self, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_join(self, limit: int) -> bool:
+            return True
+
+    class _Repo:
+        async def insert_action(self, chat_id: int, message_id: int, action: str, status: str) -> None:
+            return None
+
+    class _Client:
+        async def send_message(
+            self,
+            entity: str | int,
+            message: str,
+            link_preview: bool = False,
+            parse_mode: str | None = None,
+        ) -> object:
+            class _Msg:
+                id = 1
+
+            return _Msg()
+
+    invite_link = "https://t.me/+AbCdEfGh12345678"
+    settings = Settings(
+        api_id=1,
+        api_hash="hash",
+        forward_target="@default_target",
+        forward_target_2="@special_target",
+        priority_group_links_2=(invite_link,),
+    )
+    executor = ActionExecutor(
+        client=_Client(),  # type: ignore[arg-type]
+        settings=settings,
+        cooldown=_Cooldown(),  # type: ignore[arg-type]
+        repository=_Repo(),  # type: ignore[arg-type]
+    )
+    executor._remember_private_invite_source(invite_link, -1009998887776)
+    assert (
+        executor.resolve_forward_target_for_chat(chat_id=-1009998887776, chat_username=None)
+        == "@special_target"
+    )
+    assert (
+        executor.resolve_forward_target_for_chat(chat_id=-1001112223334, chat_username=None)
+        == "@default_target"
     )

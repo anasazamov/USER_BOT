@@ -109,6 +109,11 @@ class BotSubscriber:
     username: str | None
     first_name: str | None
     active: bool
+    subscription_status: str
+    subscription_expires_at: str | None
+    subscription_reminder_sent_at: str | None
+    approved_by_admin_id: int | None
+    approved_at: str | None
     subscribed_at: str
     updated_at: str
 
@@ -462,6 +467,31 @@ class ActionRepository:
             status = await conn.execute(query, clean_username)
         return status.endswith("1")
 
+    @staticmethod
+    def _map_bot_subscriber_row(row: asyncpg.Record) -> BotSubscriber:
+        return BotSubscriber(
+            user_id=int(row["user_id"]),
+            chat_id=int(row["chat_id"]),
+            username=row["username"],
+            first_name=row["first_name"],
+            active=bool(row["active"]),
+            subscription_status=str(row["subscription_status"] or ("active" if row["active"] else "inactive")),
+            subscription_expires_at=(
+                str(row["subscription_expires_at"]) if row["subscription_expires_at"] is not None else None
+            ),
+            subscription_reminder_sent_at=(
+                str(row["subscription_reminder_sent_at"])
+                if row["subscription_reminder_sent_at"] is not None
+                else None
+            ),
+            approved_by_admin_id=(
+                int(row["approved_by_admin_id"]) if row["approved_by_admin_id"] is not None else None
+            ),
+            approved_at=str(row["approved_at"]) if row["approved_at"] is not None else None,
+            subscribed_at=str(row["subscribed_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
     async def upsert_bot_subscriber(
         self,
         user_id: int,
@@ -473,30 +503,229 @@ class ActionRepository:
         if not self.db.pool:
             raise RuntimeError("db_not_connected")
         clean_username = username.strip().lstrip("@").lower() if username else None
+        insert_status = "active" if active else "inactive"
         query = """
-        INSERT INTO bot_subscribers (user_id, chat_id, username, first_name, active, subscribed_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+        INSERT INTO bot_subscribers (
+            user_id, chat_id, username, first_name, active, subscription_status, subscribed_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
         ON CONFLICT (user_id) DO UPDATE SET
             chat_id = EXCLUDED.chat_id,
             username = COALESCE(EXCLUDED.username, bot_subscribers.username),
             first_name = COALESCE(EXCLUDED.first_name, bot_subscribers.first_name),
             active = EXCLUDED.active,
+            subscription_status = CASE
+                WHEN EXCLUDED.active = FALSE AND bot_subscribers.subscription_status = 'active'
+                    THEN 'inactive'
+                WHEN EXCLUDED.active = TRUE AND bot_subscribers.subscription_expires_at IS NULL
+                    THEN 'active'
+                ELSE bot_subscribers.subscription_status
+            END,
             updated_at = NOW()
         """
         async with self.db.pool.acquire() as conn:
-            await conn.execute(query, user_id, chat_id, clean_username, first_name, active)
+            await conn.execute(query, user_id, chat_id, clean_username, first_name, active, insert_status)
 
     async def set_bot_subscriber_active(self, user_id: int, active: bool) -> bool:
         if not self.db.pool:
             raise RuntimeError("db_not_connected")
         query = """
         UPDATE bot_subscribers
-        SET active = $2, updated_at = NOW()
+        SET
+            active = $2,
+            subscription_status = CASE
+                WHEN $2 = FALSE AND subscription_status = 'active' THEN 'inactive'
+                WHEN $2 = TRUE AND (subscription_expires_at IS NULL OR subscription_expires_at > NOW())
+                    THEN 'active'
+                ELSE subscription_status
+            END,
+            updated_at = NOW()
         WHERE user_id = $1
         """
         async with self.db.pool.acquire() as conn:
             status = await conn.execute(query, user_id, active)
         return status.endswith("1")
+
+    async def fetch_bot_subscriber_by_user_id(self, user_id: int) -> BotSubscriber | None:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
+        FROM bot_subscribers
+        WHERE user_id = $1
+        LIMIT 1
+        """
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+        if row is None:
+            return None
+        return self._map_bot_subscriber_row(row)
+
+    async def mark_bot_subscriber_pending(self, user_id: int) -> BotSubscriber | None:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        UPDATE bot_subscribers
+        SET
+            active = FALSE,
+            subscription_status = 'pending',
+            updated_at = NOW()
+        WHERE user_id = $1
+        RETURNING
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
+        """
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id)
+        if row is None:
+            return None
+        return self._map_bot_subscriber_row(row)
+
+    async def activate_or_extend_bot_subscriber_subscription(
+        self,
+        user_id: int,
+        days: int,
+        admin_user_id: int | None = None,
+    ) -> BotSubscriber | None:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        if days <= 0:
+            raise ValueError("invalid_days")
+        query = """
+        UPDATE bot_subscribers
+        SET
+            active = TRUE,
+            subscription_status = 'active',
+            subscription_expires_at = GREATEST(COALESCE(subscription_expires_at, NOW()), NOW())
+                + ($2::INT * INTERVAL '1 day'),
+            subscription_reminder_sent_at = NULL,
+            approved_by_admin_id = COALESCE($3, approved_by_admin_id),
+            approved_at = NOW(),
+            updated_at = NOW()
+        WHERE user_id = $1
+        RETURNING
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
+        """
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id, days, admin_user_id)
+        if row is None:
+            return None
+        return self._map_bot_subscriber_row(row)
+
+    async def fetch_pending_bot_subscribers(self, limit: int = 50) -> list[BotSubscriber]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
+        FROM bot_subscribers
+        WHERE subscription_status = 'pending'
+        ORDER BY updated_at DESC
+        LIMIT $1
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+        return [self._map_bot_subscriber_row(row) for row in rows]
+
+    async def fetch_expiring_bot_subscribers(self, reminder_hours: int, limit: int = 200) -> list[BotSubscriber]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        if reminder_hours <= 0:
+            return []
+        query = """
+        SELECT
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
+        FROM bot_subscribers
+        WHERE active = TRUE
+          AND subscription_status = 'active'
+          AND subscription_expires_at IS NOT NULL
+          AND subscription_expires_at > NOW()
+          AND subscription_expires_at <= NOW() + ($1::INT * INTERVAL '1 hour')
+          AND (
+              subscription_reminder_sent_at IS NULL
+              OR subscription_reminder_sent_at < NOW() - INTERVAL '12 hour'
+          )
+        ORDER BY subscription_expires_at ASC
+        LIMIT $2
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, reminder_hours, limit)
+        return [self._map_bot_subscriber_row(row) for row in rows]
+
+    async def mark_bot_subscriber_reminder_sent(self, user_id: int) -> bool:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        UPDATE bot_subscribers
+        SET subscription_reminder_sent_at = NOW(), updated_at = NOW()
+        WHERE user_id = $1
+        """
+        async with self.db.pool.acquire() as conn:
+            status = await conn.execute(query, user_id)
+        return status.endswith("1")
+
+    async def expire_due_bot_subscribers(self, limit: int = 200) -> list[BotSubscriber]:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        WITH due AS (
+            SELECT user_id
+            FROM bot_subscribers
+            WHERE active = TRUE
+              AND subscription_status = 'active'
+              AND subscription_expires_at IS NOT NULL
+              AND subscription_expires_at <= NOW()
+            ORDER BY subscription_expires_at ASC
+            LIMIT $1
+        )
+        UPDATE bot_subscribers AS b
+        SET
+            active = FALSE,
+            subscription_status = 'expired',
+            updated_at = NOW()
+        FROM due
+        WHERE b.user_id = due.user_id
+        RETURNING
+            b.user_id, b.chat_id, b.username, b.first_name, b.active,
+            b.subscription_status, b.subscription_expires_at, b.subscription_reminder_sent_at,
+            b.approved_by_admin_id, b.approved_at,
+            b.subscribed_at, b.updated_at
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, limit)
+        return [self._map_bot_subscriber_row(row) for row in rows]
+
+    async def has_active_paid_subscription(self, user_id: int) -> bool:
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT 1
+        FROM bot_subscribers
+        WHERE user_id = $1
+          AND active = TRUE
+          AND subscription_status = 'active'
+          AND subscription_expires_at IS NOT NULL
+          AND subscription_expires_at > NOW()
+        LIMIT 1
+        """
+        async with self.db.pool.acquire() as conn:
+            value = await conn.fetchval(query, user_id)
+        return bool(value)
 
     async def count_bot_subscribers(self, active_only: bool = True) -> int:
         if not self.db.pool:
@@ -529,7 +758,11 @@ class ActionRepository:
             raise RuntimeError("db_not_connected")
         where_clause = "WHERE active = TRUE" if active_only else ""
         query = f"""
-        SELECT user_id, chat_id, username, first_name, active, subscribed_at, updated_at
+        SELECT
+            user_id, chat_id, username, first_name, active,
+            subscription_status, subscription_expires_at, subscription_reminder_sent_at,
+            approved_by_admin_id, approved_at,
+            subscribed_at, updated_at
         FROM bot_subscribers
         {where_clause}
         ORDER BY updated_at DESC
@@ -537,18 +770,7 @@ class ActionRepository:
         """
         async with self.db.pool.acquire() as conn:
             rows = await conn.fetch(query, limit)
-        return [
-            BotSubscriber(
-                user_id=int(row["user_id"]),
-                chat_id=int(row["chat_id"]),
-                username=row["username"],
-                first_name=row["first_name"],
-                active=bool(row["active"]),
-                subscribed_at=str(row["subscribed_at"]),
-                updated_at=str(row["updated_at"]),
-            )
-            for row in rows
-        ]
+        return [self._map_bot_subscriber_row(row) for row in rows]
 
     async def fetch_action_stats(self) -> ActionStats:
         if not self.db.pool:

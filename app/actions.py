@@ -7,7 +7,7 @@ import random
 import re
 from typing import Protocol
 
-from telethon import TelegramClient, functions
+from telethon import TelegramClient, functions, utils
 
 from app.config import Settings
 from app.models import Decision, NormalizedMessage
@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 _TME_CHAT_REF_RE = re.compile(
     r"^(?:https?://)?t\.me/(?:(?:c/(?P<c_id>\d+)(?:/\d+)?)|(?P<username>[A-Za-z0-9_]+)(?:/\d+)?)/?$",
+    re.IGNORECASE,
+)
+_PRIVATE_INVITE_REF_RE = re.compile(
+    r"^(?:https?://)?t\.me/(?:(?:\+)|(?:joinchat/))(?P<invite>[A-Za-z0-9_-]{8,128})/?$",
     re.IGNORECASE,
 )
 
@@ -51,6 +55,7 @@ class ActionExecutor:
         self.runtime_config = runtime_config
         self.bot_publisher = bot_publisher
         self._published_order_map: dict[tuple[int, int], tuple[str | int, int]] = {}
+        self._private_invite_route_map: dict[str, int] = {}
 
     async def execute(self, msg: NormalizedMessage, decision: Decision) -> None:
         if not decision.should_forward:
@@ -91,6 +96,11 @@ class ActionExecutor:
             await self._human_pause()
         source_link = self._build_source_link(msg)
         sender_profile_link = self._build_sender_profile_link(msg.envelope.sender_id)
+        sender_profile_text = self._build_sender_profile_text(
+            sender_id=msg.envelope.sender_id,
+            sender_username=msg.envelope.sender_username,
+            sender_name=msg.envelope.sender_name,
+        )
         publish_key = (msg.envelope.chat_id, msg.envelope.message_id)
         existing_publish = self._published_order_map.get(publish_key)
         status_label = "Yangilandi" if existing_publish else "Yangi"
@@ -98,6 +108,7 @@ class ActionExecutor:
             raw_text=msg.envelope.raw_text,
             source_link=source_link,
             sender_profile_link=sender_profile_link,
+            sender_profile_text=sender_profile_text,
             region_tag=decision.region_tag,
             status_label=status_label,
         )
@@ -216,7 +227,22 @@ class ActionExecutor:
             await self._human_pause()
             invite_hash = invite_link.rsplit("/", 1)[-1].lstrip("+")
             logger.info("join_attempt", extra={"action": "join_attempt", "reason": invite_link[:120]})
-            await self.client(functions.messages.ImportChatInviteRequest(invite_hash))
+            updates = await self.client(functions.messages.ImportChatInviteRequest(invite_hash))
+            joined_chat_id = self._extract_joined_chat_id(updates)
+            if joined_chat_id is not None:
+                self._remember_private_invite_source(invite_link, joined_chat_id)
+                try:
+                    await self.repository.upsert_private_invite_link(
+                        invite_link,
+                        source_chat_id=joined_chat_id,
+                        note=None,
+                        active=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "join_private_link_source_store_failed",
+                        extra={"chat_id": joined_chat_id},
+                    )
             logger.info("join_ok", extra={"action": "join", "status": "ok"})
             await self.repository.insert_action(0, 0, "join", "ok")
             return True
@@ -312,14 +338,20 @@ class ActionExecutor:
             return None
         return f"@{username}"
 
-    @classmethod
     def _is_source_route_match(
-        cls,
+        self,
         source: str,
         chat_id: int,
         chat_username: str | None,
     ) -> bool:
-        normalized_source = cls._normalize_source_route_value(source)
+        normalized_invite = self._normalize_private_invite_ref(source)
+        if normalized_invite:
+            mapped_chat_id = self._private_invite_route_map.get(normalized_invite)
+            if mapped_chat_id is None:
+                return False
+            return chat_id == mapped_chat_id
+
+        normalized_source = self._normalize_source_route_value(source)
         if normalized_source is None:
             return False
         if isinstance(normalized_source, int):
@@ -346,6 +378,46 @@ class ActionExecutor:
         normalized = raw.lstrip("@").strip().lower()
         return normalized or None
 
+    @staticmethod
+    def _normalize_private_invite_ref(value: str | int) -> str | None:
+        if isinstance(value, int):
+            return None
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        match = _PRIVATE_INVITE_REF_RE.fullmatch(raw)
+        if not match:
+            return None
+        invite_hash = (match.group("invite") or "").strip()
+        if not invite_hash:
+            return None
+        return f"https://t.me/+{invite_hash}"
+
+    def _remember_private_invite_source(self, invite_link: str, source_chat_id: int) -> None:
+        normalized = self._normalize_private_invite_ref(invite_link)
+        if normalized and source_chat_id:
+            self._private_invite_route_map[normalized] = int(source_chat_id)
+
+    async def refresh_private_invite_route_cache(self) -> int:
+        rows = await self.repository.fetch_private_invite_rows(limit=5000)
+        loaded = 0
+        cache: dict[str, int] = {}
+        for row in rows:
+            if not row.active or row.source_chat_id is None:
+                continue
+            normalized = self._normalize_private_invite_ref(row.invite_link)
+            if not normalized:
+                continue
+            cache[normalized] = int(row.source_chat_id)
+            loaded += 1
+        self._private_invite_route_map = cache
+        if loaded:
+            logger.info(
+                "private_invite_route_cache_loaded",
+                extra={"action": "route_cache_load", "count": loaded},
+            )
+        return loaded
+
     def _build_source_link(self, msg: NormalizedMessage) -> str:
         username = (msg.envelope.chat_username or "").strip().lstrip("@")
         if username:
@@ -364,11 +436,28 @@ class ActionExecutor:
         return f"tg://user?id={sender_id}"
 
     @staticmethod
+    def _build_sender_profile_text(
+        sender_id: int | None,
+        sender_username: str | None = None,
+        sender_name: str | None = None,
+    ) -> str:
+        username = (sender_username or "").strip().lstrip("@")
+        if username:
+            return f"@{username}"
+        display_name = " ".join((sender_name or "").split())
+        if display_name:
+            return display_name[:80]
+        if sender_id and sender_id > 0:
+            return "Profilga o'tish"
+        return ""
+
+    @staticmethod
     def format_publish_message(
         raw_text: str,
         source_link: str,
         region_tag: str | None,
         sender_profile_link: str = "",
+        sender_profile_text: str = "",
         status_label: str = "Yangi",
     ) -> str:
         region = region_tag or "#Uzbekiston"
@@ -396,6 +485,22 @@ class ActionExecutor:
             lines.append("Manba: private chat")
         if sender_profile_link:
             safe_sender_href = html.escape(sender_profile_link, quote=True)
-            lines.append(f'Aloqa: <a href="{safe_sender_href}">Profilga o&apos;tish</a>')
+            sender_label = sender_profile_text.strip() or "Profilga o'tish"
+            safe_sender_text = html.escape(sender_label, quote=False)
+            lines.append(f'Aloqa: <a href="{safe_sender_href}">{safe_sender_text}</a>')
 
         return "\n\n".join(lines)
+
+    @staticmethod
+    def _extract_joined_chat_id(result: object) -> int | None:
+        chats = getattr(result, "chats", None)
+        if not chats:
+            return None
+        for chat in chats:
+            try:
+                peer_id = int(utils.get_peer_id(chat))
+            except Exception:
+                continue
+            if peer_id != 0:
+                return peer_id
+        return None

@@ -36,3 +36,20 @@ def test_settings_bot_admin_ids_from_env(monkeypatch) -> None:
 
     settings = Settings.from_env()
     assert settings.bot_admin_user_ids == (1, 2, 3)
+
+
+def test_settings_paid_subscription_options(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.setenv("BOT_PAID_SUBSCRIPTION_ENABLED", "true")
+    monkeypatch.setenv("BOT_SUBSCRIPTION_DEFAULT_DAYS", "45")
+    monkeypatch.setenv("BOT_SUBSCRIPTION_REMINDER_HOURS", "24")
+    monkeypatch.setenv("BOT_SUBSCRIPTION_CHECK_INTERVAL_SEC", "120")
+    monkeypatch.setenv("BOT_MANAGED_PRIVATE_GROUP_IDS", "-1001,-1002")
+
+    settings = Settings.from_env()
+    assert settings.bot_paid_subscription_enabled is True
+    assert settings.bot_subscription_default_days == 45
+    assert settings.bot_subscription_reminder_hours == 24
+    assert settings.bot_subscription_check_interval_sec == 120
+    assert settings.bot_managed_private_group_ids == (-1001, -1002)

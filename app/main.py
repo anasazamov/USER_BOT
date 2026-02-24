@@ -90,6 +90,8 @@ async def main() -> None:
         runtime_config=runtime_config,
         bot_publisher=management_bot,
     )
+    with suppress(Exception):
+        await executor.refresh_private_invite_route_cache()
     invite_manager = InviteLinkManager(repository, executor, client, settings.invite_sync_interval_sec)
     web_server: AdminWebServer | None = None
     if settings.admin_web_enabled:

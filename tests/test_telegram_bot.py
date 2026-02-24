@@ -1,3 +1,5 @@
+import asyncio
+
 from app.telegram_bot import TelegramUserbot
 
 
@@ -74,3 +76,38 @@ def test_is_target_match_by_numeric_id() -> None:
 
 def test_is_target_match_ignores_me_targets() -> None:
     assert TelegramUserbot._is_target_match("me", -100777, "test_taxi_order") is False
+
+
+def test_extract_sender_identity_from_event_prefers_username_and_name() -> None:
+    class _Sender:
+        username = "azizbek"
+        first_name = "Aziz"
+        last_name = "Bek"
+
+    class _Event:
+        sender = _Sender()
+        message = None
+
+    username, name = TelegramUserbot._extract_sender_identity_from_event(_Event())  # type: ignore[arg-type]
+    assert username == "azizbek"
+    assert name == "Aziz Bek"
+
+
+def test_acknowledge_chat_read_skips_duplicate_message_ids() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        async def send_read_acknowledge(self, chat_id: int, max_id: int, clear_mentions: bool = True) -> None:
+            self.calls.append((chat_id, max_id))
+
+    async def run() -> None:
+        bot = TelegramUserbot.__new__(TelegramUserbot)
+        bot.client = _Client()
+        bot._chat_last_read_ack = {}
+        await TelegramUserbot._acknowledge_chat_read(bot, -1001, 10, source="realtime")
+        await TelegramUserbot._acknowledge_chat_read(bot, -1001, 10, source="realtime")
+        await TelegramUserbot._acknowledge_chat_read(bot, -1001, 11, source="realtime")
+        assert bot.client.calls == [(-1001, 10), (-1001, 11)]
+
+    asyncio.run(run())

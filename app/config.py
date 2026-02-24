@@ -28,6 +28,14 @@ class Settings:
     bot_poll_timeout_sec: int = 25
     bot_broadcast_subscribers: bool = False
     bot_admin_user_ids: tuple[int, ...] = ()
+    bot_paid_subscription_enabled: bool = False
+    bot_subscription_default_days: int = 30
+    bot_subscription_reminder_hours: int = 72
+    bot_subscription_check_interval_sec: int = 600
+    bot_managed_private_group_ids: tuple[int, ...] = ()
+    bot_auto_approve_join_requests: bool = True
+    bot_decline_unpaid_join_requests: bool = True
+    bot_remove_expired_from_groups: bool = False
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/userbot"
     redis_url: Optional[str] = None
@@ -107,6 +115,26 @@ class Settings:
                 os.environ.get("BOT_BROADCAST_SUBSCRIBERS", "false")
             ),
             bot_admin_user_ids=_parse_int_list(admin_user_ids_raw),
+            bot_paid_subscription_enabled=_parse_bool(
+                os.environ.get("BOT_PAID_SUBSCRIPTION_ENABLED", "false")
+            ),
+            bot_subscription_default_days=int(os.environ.get("BOT_SUBSCRIPTION_DEFAULT_DAYS", "30")),
+            bot_subscription_reminder_hours=int(os.environ.get("BOT_SUBSCRIPTION_REMINDER_HOURS", "72")),
+            bot_subscription_check_interval_sec=int(
+                os.environ.get("BOT_SUBSCRIPTION_CHECK_INTERVAL_SEC", "600")
+            ),
+            bot_managed_private_group_ids=_parse_int_list(
+                os.environ.get("BOT_MANAGED_PRIVATE_GROUP_IDS", "")
+            ),
+            bot_auto_approve_join_requests=_parse_bool(
+                os.environ.get("BOT_AUTO_APPROVE_JOIN_REQUESTS", "true")
+            ),
+            bot_decline_unpaid_join_requests=_parse_bool(
+                os.environ.get("BOT_DECLINE_UNPAID_JOIN_REQUESTS", "true")
+            ),
+            bot_remove_expired_from_groups=_parse_bool(
+                os.environ.get("BOT_REMOVE_EXPIRED_FROM_GROUPS", "false")
+            ),
             database_url=os.environ.get(
                 "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/userbot"
             ),

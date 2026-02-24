@@ -9,6 +9,8 @@ class MessageEnvelope:
     message_id: int
     sender_id: int | None
     raw_text: str
+    sender_username: str | None = None
+    sender_name: str | None = None
     chat_username: str | None = None
     chat_title: str | None = None
 
