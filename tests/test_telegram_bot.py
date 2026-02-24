@@ -104,6 +104,7 @@ def test_acknowledge_chat_read_skips_duplicate_message_ids() -> None:
     async def run() -> None:
         bot = TelegramUserbot.__new__(TelegramUserbot)
         bot.client = _Client()
+        bot.settings = type("_Settings", (), {"telegram_read_ack_enabled": True})()
         bot._chat_last_read_ack = {}
         await TelegramUserbot._acknowledge_chat_read(bot, -1001, 10, source="realtime")
         await TelegramUserbot._acknowledge_chat_read(bot, -1001, 10, source="realtime")

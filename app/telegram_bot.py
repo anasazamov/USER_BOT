@@ -450,6 +450,9 @@ class TelegramUserbot:
             logger.info("chat_read_state_flushed", extra={"action": "state_flush", "count": flushed})
 
     async def _acknowledge_chat_read(self, chat_id: int, message_id: int, source: str) -> None:
+        settings = getattr(self, "settings", None)
+        if not getattr(settings, "telegram_read_ack_enabled", False):
+            return
         if message_id <= 0:
             return
         previous = self._chat_last_read_ack.get(chat_id, 0)

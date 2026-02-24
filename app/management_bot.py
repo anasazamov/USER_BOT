@@ -69,17 +69,30 @@ class TelegramManagementBot:
             await self._session.close()
             self._session = None
 
-    async def send_message(self, chat_id: str | int, text: str) -> int:
+    async def send_message(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> int:
         payload = {
             "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         result = await self._api_call("sendMessage", payload)
         return int((result or {}).get("message_id") or 0)
 
-    async def edit_message(self, chat_id: str | int, message_id: int, text: str) -> None:
+    async def edit_message(
+        self,
+        chat_id: str | int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
         payload = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -87,6 +100,8 @@ class TelegramManagementBot:
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         await self._api_call("editMessageText", payload)
 
     async def broadcast_to_subscribers(self, text: str) -> tuple[int, int]:
@@ -127,7 +142,7 @@ class TelegramManagementBot:
         payload = {
             "timeout": self.poll_timeout_sec,
             "offset": self._offset,
-            "allowed_updates": ["message", "chat_join_request"],
+            "allowed_updates": ["message", "chat_join_request", "callback_query"],
         }
         result = await self._api_call("getUpdates", payload)
         if isinstance(result, list):
@@ -135,6 +150,11 @@ class TelegramManagementBot:
         return []
 
     async def _handle_update(self, update: dict[str, Any]) -> None:
+        callback_query = update.get("callback_query")
+        if isinstance(callback_query, dict):
+            await self._handle_callback_query(callback_query)
+            return
+
         join_request = update.get("chat_join_request")
         if isinstance(join_request, dict):
             await self._handle_chat_join_request(join_request)
@@ -157,6 +177,7 @@ class TelegramManagementBot:
         chat_type = str(chat.get("type") or "")
         username = from_user.get("username")
         first_name = from_user.get("first_name")
+        is_admin = self._is_admin(user_id)
 
         command, arg = self._parse_command(text)
         if command in {"start", "subscribe"} and chat_type == "private":
@@ -174,9 +195,14 @@ class TelegramManagementBot:
                 await self.send_message(
                     chat_id,
                     self._welcome_pending_text(default_days=self.subscription_default_days),
+                    reply_markup=self._user_panel_keyboard(is_admin=is_admin),
                 )
             else:
-                await self.send_message(chat_id, self._welcome_text())
+                await self.send_message(
+                    chat_id,
+                    self._welcome_text(),
+                    reply_markup=self._user_panel_keyboard(is_admin=is_admin),
+                )
             return
 
         if command in {"stop", "unsubscribe"} and chat_type == "private":
@@ -189,41 +215,65 @@ class TelegramManagementBot:
                     first_name=first_name,
                     active=False,
                 )
-            await self.send_message(chat_id, "Obuna to'xtatildi. Qayta yoqish: /start")
+            await self.send_message(
+                chat_id,
+                "Obuna to'xtatildi. Qayta yoqish: /start",
+                reply_markup=self._user_panel_keyboard(is_admin=is_admin),
+            )
             return
 
         if command == "status" and chat_type == "private":
             subscriber = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
-            await self.send_message(chat_id, self._build_subscriber_status_text(subscriber))
+            await self.send_message(
+                chat_id,
+                self._build_subscriber_status_text(subscriber),
+                reply_markup=self._user_panel_keyboard(is_admin=is_admin),
+            )
+            return
+
+        if command in {"menu", "admin"} and chat_type == "private":
+            if command == "admin" and not is_admin:
+                await self.send_message(chat_id, "Ruxsat yo'q.")
+                return
+            await self.send_message(
+                chat_id,
+                self._admin_panel_text() if is_admin else self._user_panel_text(),
+                reply_markup=self._admin_panel_keyboard() if is_admin else self._user_panel_keyboard(False),
+            )
             return
 
         if command == "help":
-            await self.send_message(chat_id, self._help_text())
+            await self.send_message(
+                chat_id,
+                self._help_text(),
+                reply_markup=self._user_panel_keyboard(is_admin=is_admin) if chat_type == "private" else None,
+            )
             return
 
         if command == "stats":
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             await self.send_message(chat_id, await self._build_stats_text())
             return
 
         if command in {"subscribers", "subs"}:
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             await self.send_message(chat_id, await self._build_subscribers_text())
             return
 
         if command == "pending":
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
-            await self.send_message(chat_id, await self._build_pending_subscribers_text())
+            pending_text, pending_keyboard = await self._build_pending_panel(page=0)
+            await self.send_message(chat_id, pending_text, reply_markup=pending_keyboard)
             return
 
         if command in {"approve", "extend"}:
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             target_user_id, days = self._parse_admin_extend_args(arg, self.subscription_default_days)
@@ -251,7 +301,7 @@ class TelegramManagementBot:
             return
 
         if command in {"checksubs", "subcheck"}:
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             await self._run_subscription_maintenance()
@@ -259,7 +309,7 @@ class TelegramManagementBot:
             return
 
         if command == "broadcast":
-            if not self._is_admin(user_id):
+            if not is_admin:
                 await self.send_message(chat_id, "Ruxsat yo'q.")
                 return
             if not arg:
@@ -270,6 +320,295 @@ class TelegramManagementBot:
             return
 
         await self.send_message(chat_id, self._help_text())
+
+    async def answer_callback_query(self, callback_query_id: str, text: str = "", alert: bool = False) -> None:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text[:180]
+        if alert:
+            payload["show_alert"] = True
+        with suppress(Exception):
+            await self._api_call("answerCallbackQuery", payload)
+
+    async def _handle_callback_query(self, payload: dict[str, Any]) -> None:
+        callback_id = str(payload.get("id") or "")
+        data = str(payload.get("data") or "").strip()
+        from_user = payload.get("from") or {}
+        user_id = int(from_user.get("id") or 0)
+        message = payload.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = int(chat.get("id") or 0)
+        message_id = int(message.get("message_id") or 0)
+
+        if not callback_id or not data:
+            return
+
+        parts = data.split(":")
+        scope = parts[0] if parts else ""
+        is_admin = self._is_admin(user_id)
+
+        if scope == "usr":
+            await self._handle_user_callback(
+                callback_id=callback_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                parts=parts,
+                is_admin=is_admin,
+            )
+            return
+
+        if scope == "adm":
+            if not is_admin:
+                await self.answer_callback_query(callback_id, "Ruxsat yo'q", alert=True)
+                return
+            await self._handle_admin_callback(
+                callback_id=callback_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                parts=parts,
+            )
+            return
+
+        await self.answer_callback_query(callback_id, "Noma'lum amal")
+
+    async def _handle_user_callback(
+        self,
+        callback_id: str,
+        user_id: int,
+        chat_id: int,
+        message_id: int,
+        parts: list[str],
+        is_admin: bool,
+    ) -> None:
+        if chat_id == 0 or message_id == 0:
+            await self.answer_callback_query(callback_id, "Xabar topilmadi")
+            return
+        action = parts[1] if len(parts) > 1 else "menu"
+        if action == "status":
+            subscriber = await self.repository.fetch_bot_subscriber_by_user_id(user_id)
+            await self._edit_callback_message(
+                chat_id,
+                message_id,
+                self._build_subscriber_status_text(subscriber),
+                self._user_panel_keyboard(is_admin=is_admin),
+            )
+            await self.answer_callback_query(callback_id, "Holat yangilandi")
+            return
+        if action == "help":
+            await self._edit_callback_message(
+                chat_id,
+                message_id,
+                self._help_text(),
+                self._user_panel_keyboard(is_admin=is_admin),
+            )
+            await self.answer_callback_query(callback_id, "Yordam")
+            return
+        if action == "menu":
+            text = self._admin_panel_text() if is_admin else self._user_panel_text()
+            keyboard = self._admin_panel_keyboard() if is_admin else self._user_panel_keyboard(False)
+            await self._edit_callback_message(chat_id, message_id, text, keyboard)
+            await self.answer_callback_query(callback_id, "Menyu")
+            return
+        await self.answer_callback_query(callback_id, "Noma'lum amal")
+
+    async def _handle_admin_callback(
+        self,
+        callback_id: str,
+        user_id: int,
+        chat_id: int,
+        message_id: int,
+        parts: list[str],
+    ) -> None:
+        if chat_id == 0 or message_id == 0:
+            await self.answer_callback_query(callback_id, "Xabar topilmadi")
+            return
+        action = parts[1] if len(parts) > 1 else "menu"
+        if action == "menu":
+            await self._edit_callback_message(chat_id, message_id, self._admin_panel_text(), self._admin_panel_keyboard())
+            await self.answer_callback_query(callback_id, "Admin panel")
+            return
+        if action == "stats":
+            await self._edit_callback_message(
+                chat_id,
+                message_id,
+                await self._build_stats_text(),
+                self._admin_panel_keyboard(),
+            )
+            await self.answer_callback_query(callback_id, "Statistika")
+            return
+        if action == "subs":
+            await self._edit_callback_message(
+                chat_id,
+                message_id,
+                await self._build_subscribers_text(),
+                self._admin_panel_keyboard(),
+            )
+            await self.answer_callback_query(callback_id, "Subscriberlar")
+            return
+        if action == "check":
+            await self._run_subscription_maintenance()
+            text, keyboard = await self._build_pending_panel(page=0)
+            await self._edit_callback_message(chat_id, message_id, text, keyboard)
+            await self.answer_callback_query(callback_id, "Tekshiruv bajarildi")
+            return
+        if action == "pending":
+            page = self._safe_int(parts[2] if len(parts) > 2 else "0", 0)
+            text, keyboard = await self._build_pending_panel(page=page)
+            await self._edit_callback_message(chat_id, message_id, text, keyboard)
+            await self.answer_callback_query(callback_id, "Pending ro'yxat")
+            return
+        if action == "apr":
+            target_user_id = self._safe_int(parts[2] if len(parts) > 2 else "0", 0)
+            days = self._safe_int(parts[3] if len(parts) > 3 else str(self.subscription_default_days), 0)
+            page = self._safe_int(parts[4] if len(parts) > 4 else "0", 0)
+            if target_user_id <= 0 or days <= 0:
+                await self.answer_callback_query(callback_id, "Parametr xato", alert=True)
+                return
+            subscriber = await self.repository.activate_or_extend_bot_subscriber_subscription(
+                user_id=target_user_id,
+                days=days,
+                admin_user_id=user_id,
+            )
+            if subscriber is None:
+                await self.answer_callback_query(callback_id, "Subscriber topilmadi", alert=True)
+                return
+            with suppress(Exception):
+                await self.send_message(subscriber.chat_id, self._subscription_approved_user_text(subscriber, days))
+            text, keyboard = await self._build_pending_panel(page=page)
+            await self._edit_callback_message(chat_id, message_id, text, keyboard)
+            await self.answer_callback_query(callback_id, f"+{days} kun berildi")
+            return
+        await self.answer_callback_query(callback_id, "Noma'lum admin amal")
+
+    async def _edit_callback_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None,
+    ) -> None:
+        try:
+            await self.edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+        except Exception as exc:
+            if self._is_message_not_modified_error(str(exc)):
+                return
+            raise
+
+    async def _build_pending_panel(self, page: int = 0) -> tuple[str, dict[str, Any]]:
+        subscribers = await self.repository.fetch_pending_bot_subscribers(limit=50)
+        page_size = 5
+        if not subscribers:
+            return ("Pending subscriberlar yo'q.", self._admin_panel_keyboard())
+        total = len(subscribers)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(0, page), total_pages - 1)
+        start = page * page_size
+        end = min(total, start + page_size)
+        current = subscribers[start:end]
+        lines = [
+            f"Pending subscriberlar ({start + 1}-{end}/{total})",
+            "Bir tugma bilan tasdiqlash uchun pastdagi tugmalardan foydalaning.",
+        ]
+        for subscriber in current:
+            lines.append(self._subscriber_line(subscriber))
+        return ("\n".join(lines), self._pending_panel_keyboard(current, page=page, total_pages=total_pages))
+
+    def _user_panel_text(self) -> str:
+        return (
+            "Menyu:\n"
+            "Tugmalar orqali holatni ko'ring yoki yordamni oching.\n"
+            "Obuna yoqish: /start"
+        )
+
+    def _admin_panel_text(self) -> str:
+        return (
+            "Admin panel:\n"
+            "Pending, subscriberlar va statistika bo'limlari tugmalar orqali boshqariladi.\n"
+            "Paid obuna tasdiqlash uchun Pending bo'limidan foydalaning."
+        )
+
+    def _user_panel_keyboard(self, is_admin: bool) -> dict[str, Any]:
+        rows: list[list[dict[str, str]]] = [
+            [
+                {"text": "Status", "callback_data": "usr:status"},
+                {"text": "Yordam", "callback_data": "usr:help"},
+            ]
+        ]
+        if is_admin:
+            rows.append([{"text": "Admin Panel", "callback_data": "adm:menu"}])
+        return {"inline_keyboard": rows}
+
+    def _admin_panel_keyboard(self) -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "Pending", "callback_data": "adm:pending:0"},
+                    {"text": "Subscribers", "callback_data": "adm:subs"},
+                ],
+                [
+                    {"text": "Stats", "callback_data": "adm:stats"},
+                    {"text": "Check Subs", "callback_data": "adm:check"},
+                ],
+                [
+                    {"text": "User Menu", "callback_data": "usr:menu"},
+                ],
+            ]
+        }
+
+    def _pending_panel_keyboard(
+        self,
+        subscribers: list[BotSubscriber],
+        page: int,
+        total_pages: int,
+    ) -> dict[str, Any]:
+        rows: list[list[dict[str, str]]] = []
+        default_days = self.subscription_default_days
+        for subscriber in subscribers:
+            user_label = f"#{str(subscriber.user_id)[-4:]}"
+            rows.append(
+                [
+                    {
+                        "text": f"✅ {user_label} +{default_days}d",
+                        "callback_data": f"adm:apr:{subscriber.user_id}:{default_days}:{page}",
+                    },
+                    {
+                        "text": "+7d",
+                        "callback_data": f"adm:apr:{subscriber.user_id}:7:{page}",
+                    },
+                    {
+                        "text": "+30d",
+                        "callback_data": f"adm:apr:{subscriber.user_id}:30:{page}",
+                    },
+                ]
+            )
+        nav_row: list[dict[str, str]] = []
+        if page > 0:
+            nav_row.append({"text": "◀️ Oldingi", "callback_data": f"adm:pending:{page - 1}"})
+        nav_row.append({"text": f"{page + 1}/{total_pages}", "callback_data": f"adm:pending:{page}"})
+        if page + 1 < total_pages:
+            nav_row.append({"text": "Keyingi ▶️", "callback_data": f"adm:pending:{page + 1}"})
+        rows.append(nav_row)
+        rows.append(
+            [
+                {"text": "Yangilash", "callback_data": f"adm:pending:{page}"},
+                {"text": "Admin Panel", "callback_data": "adm:menu"},
+            ]
+        )
+        return {"inline_keyboard": rows}
+
+    @staticmethod
+    def _safe_int(value: str, default: int) -> int:
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _is_message_not_modified_error(error_text: str) -> bool:
+        lowered = (error_text or "").lower()
+        return "message is not modified" in lowered
 
     async def _build_stats_text(self) -> str:
         stats = await self.repository.fetch_action_stats()

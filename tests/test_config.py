@@ -53,3 +53,21 @@ def test_settings_paid_subscription_options(monkeypatch) -> None:
     assert settings.bot_subscription_reminder_hours == 24
     assert settings.bot_subscription_check_interval_sec == 120
     assert settings.bot_managed_private_group_ids == (-1001, -1002)
+
+
+def test_settings_telegram_read_ack_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.delenv("TELEGRAM_READ_ACK_ENABLED", raising=False)
+
+    settings = Settings.from_env()
+    assert settings.telegram_read_ack_enabled is False
+
+
+def test_settings_telegram_read_ack_can_be_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.setenv("TELEGRAM_READ_ACK_ENABLED", "true")
+
+    settings = Settings.from_env()
+    assert settings.telegram_read_ack_enabled is True

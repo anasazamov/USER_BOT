@@ -66,6 +66,7 @@ class Settings:
     history_sync_enabled: bool = True
     history_sync_interval_sec: int = 300
     history_sync_batch_size: int = 120
+    telegram_read_ack_enabled: bool = False
     admin_web_enabled: bool = True
     admin_web_host: str = "0.0.0.0"
     admin_web_port: int = 1311
@@ -162,6 +163,9 @@ class Settings:
             history_sync_enabled=_parse_bool(os.environ.get("HISTORY_SYNC_ENABLED", "true")),
             history_sync_interval_sec=int(os.environ.get("HISTORY_SYNC_INTERVAL_SEC", "300")),
             history_sync_batch_size=int(os.environ.get("HISTORY_SYNC_BATCH_SIZE", "120")),
+            telegram_read_ack_enabled=_parse_bool(
+                os.environ.get("TELEGRAM_READ_ACK_ENABLED", "false")
+            ),
             admin_web_enabled=_parse_bool(os.environ.get("ADMIN_WEB_ENABLED", "true")),
             admin_web_host=os.environ.get("ADMIN_WEB_HOST", "0.0.0.0"),
             admin_web_port=int(os.environ.get("ADMIN_WEB_PORT", "1311")),
