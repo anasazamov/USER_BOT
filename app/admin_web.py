@@ -951,8 +951,34 @@ class AdminWebServer:
       const init = body ? {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}} : {{}};
       const res = await fetch(url + tokenQs, init);
       const data = await res.json();
-      if (!res.ok) throw new Error(JSON.stringify(data));
+      if (!res.ok) {{
+        const errMsg = (data && typeof data === 'object' && data.error)
+          ? `API error: ${{data.error}}`
+          : JSON.stringify(data);
+        throw new Error(errMsg);
+      }}
       return data;
+    }}
+    function withFallback(raw, fallback) {{
+      const text = String(raw ?? '').trim();
+      return text === '' ? fallback : text;
+    }}
+    function parseDiscoveryQueriesInput(raw) {{
+      const text = String(raw ?? '').replace(/\r/g, '');
+      const out = [];
+      const seen = new Set();
+      for (const line of text.split('\n')) {{
+        for (const part of line.split(',')) {{
+          const v = part.trim().replace(/\s+/g, ' ');
+          if (!v) continue;
+          const key = v.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(v);
+          if (out.length >= 200) return out;
+        }}
+      }}
+      return out;
     }}
     function fmtTime(v) {{
       if (!v) return '-';
@@ -1134,21 +1160,36 @@ class AdminWebServer:
       }}
     }}
     async function saveConfig() {{
+      setBusy(true);
       try {{
+        if (!state.configEnabled) {{
+          setStatus('Runtime config o\\'chiq emas (backend disabled)', true);
+          return;
+        }}
+        const current = state.config || {{}};
+        const discoveryQueries = parseDiscoveryQueriesInput(cfg_discovery_queries.value);
+        const minDelay = withFallback(cfg_min_human_delay_sec.value, current.min_human_delay_sec ?? '');
+        const maxDelay = withFallback(cfg_max_human_delay_sec.value, current.max_human_delay_sec ?? '');
+        if (Number(minDelay) > Number(maxDelay)) {{
+          setStatus('Max Human Delay Min Human Delay dan kichik bo\\'lmasin', true);
+          return;
+        }}
         const values = {{
-          forward_target: cfg_forward_target.value,
-          min_text_length: cfg_min_text_length.value,
-          per_group_actions_hour: cfg_per_group_actions_hour.value,
-          per_group_replies_10m: cfg_per_group_replies_10m.value,
-          join_limit_day: cfg_join_limit_day.value,
-          global_actions_minute: cfg_global_actions_minute.value,
+          forward_target: withFallback(cfg_forward_target.value, current.forward_target ?? ''),
+          min_text_length: withFallback(cfg_min_text_length.value, current.min_text_length ?? ''),
+          per_group_actions_hour: withFallback(cfg_per_group_actions_hour.value, current.per_group_actions_hour ?? ''),
+          per_group_replies_10m: withFallback(cfg_per_group_replies_10m.value, current.per_group_replies_10m ?? ''),
+          join_limit_day: withFallback(cfg_join_limit_day.value, current.join_limit_day ?? ''),
+          global_actions_minute: withFallback(cfg_global_actions_minute.value, current.global_actions_minute ?? ''),
           min_human_delay_sec: cfg_min_human_delay_sec.value,
           max_human_delay_sec: cfg_max_human_delay_sec.value,
           discovery_enabled: cfg_discovery_enabled.checked,
-          discovery_query_limit: cfg_discovery_query_limit.value,
-          discovery_join_batch: cfg_discovery_join_batch.value,
-          discovery_queries: cfg_discovery_queries.value,
+          discovery_query_limit: withFallback(cfg_discovery_query_limit.value, current.discovery_query_limit ?? ''),
+          discovery_join_batch: withFallback(cfg_discovery_join_batch.value, current.discovery_join_batch ?? ''),
+          discovery_queries: discoveryQueries.length ? discoveryQueries : (current.discovery_queries || []),
         }};
+        values.min_human_delay_sec = minDelay;
+        values.max_human_delay_sec = maxDelay;
         const result = await req('/api/config', {{values}});
         state.config = result.config || state.config;
         state.configEnabled = true;
@@ -1156,6 +1197,8 @@ class AdminWebServer:
         setStatus('Config saqlandi');
       }} catch (e) {{
         setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
       }}
     }}
     async function kwAdd() {{
