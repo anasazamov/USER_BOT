@@ -988,7 +988,7 @@ class AdminWebServer:
       const seen = new Set();
       for (const line of text.split('\n')) {{
         for (const part of line.split(',')) {{
-          const v = part.trim().replace(/\s+/g, ' ');
+          const v = part.trim().replace(/\\s+/g, ' ');
           if (!v) continue;
           const key = v.toLowerCase();
           if (seen.has(key)) continue;
