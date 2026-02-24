@@ -50,6 +50,9 @@ class GroupDiscoveryManager:
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="group-discovery-manager")
 
+    async def run_once(self) -> None:
+        await self._run_iteration()
+
     async def stop(self) -> None:
         self._stop.set()
         if self._task:
@@ -59,45 +62,46 @@ class GroupDiscoveryManager:
 
     async def _run(self) -> None:
         while not self._stop.is_set():
-            if not self.client.is_connected():
-                await asyncio.sleep(10)
-                continue
-            if not await self._is_authorized():
-                await asyncio.sleep(10)
-                continue
-            try:
-                runtime = self.runtime_config.snapshot() if self.runtime_config else None
-                if runtime and not runtime.discovery_enabled:
-                    logger.info(
-                        "group_discovery_skipped",
-                        extra={
-                            "action": "discovery",
-                            "reason": (
-                                "disabled "
-                                f"(runtime.discovery_enabled={runtime.discovery_enabled}, "
-                                f"query_limit={runtime.discovery_query_limit}, "
-                                f"join_batch={runtime.discovery_join_batch})"
-                            ),
-                        },
-                    )
-                    await asyncio.sleep(self.interval_sec)
-                    continue
+            ran = await self._run_iteration()
+            await asyncio.sleep(self.interval_sec if ran else 10)
 
-                queries = runtime.discovery_queries if runtime else self.queries
-                query_limit = runtime.discovery_query_limit if runtime else self.query_limit
-                join_batch = runtime.discovery_join_batch if runtime else self.join_batch
-                prioritized_queries = self._prioritize_queries(queries)
+    async def _run_iteration(self) -> bool:
+        if not self.client.is_connected():
+            return False
+        if not await self._is_authorized():
+            return False
+        try:
+            runtime = self.runtime_config.snapshot() if self.runtime_config else None
+            if runtime and not runtime.discovery_enabled:
                 logger.info(
-                    "group_discovery_iteration",
-                    extra={"action": "discovery", "count": len(queries), "reason": f"limit={query_limit}"},
+                    "group_discovery_skipped",
+                    extra={
+                        "action": "discovery",
+                        "reason": (
+                            "disabled "
+                            f"(runtime.discovery_enabled={runtime.discovery_enabled}, "
+                            f"query_limit={runtime.discovery_query_limit}, "
+                            f"join_batch={runtime.discovery_join_batch})"
+                        ),
+                    },
                 )
+                return True
 
-                for query in prioritized_queries:
-                    await self._discover_query(query, query_limit=query_limit)
-                await self._join_pending(join_batch)
-            except Exception:
-                logger.exception("group_discovery_iteration_failed")
-            await asyncio.sleep(self.interval_sec)
+            queries = runtime.discovery_queries if runtime else self.queries
+            query_limit = runtime.discovery_query_limit if runtime else self.query_limit
+            join_batch = runtime.discovery_join_batch if runtime else self.join_batch
+            prioritized_queries = self._prioritize_queries(queries)
+            logger.info(
+                "group_discovery_iteration",
+                extra={"action": "discovery", "count": len(queries), "reason": f"limit={query_limit}"},
+            )
+
+            for query in prioritized_queries:
+                await self._discover_query(query, query_limit=query_limit)
+            await self._join_pending(join_batch)
+        except Exception:
+            logger.exception("group_discovery_iteration_failed")
+        return True
 
     async def _discover_query(self, query: str, query_limit: int | None = None) -> None:
         limit = query_limit if query_limit is not None else self.query_limit

@@ -71,6 +71,8 @@ class Settings:
     admin_web_host: str = "0.0.0.0"
     admin_web_port: int = 1311
     admin_web_token: Optional[str] = None
+    process_auto_restart: bool = True
+    process_restart_backoff_sec: int = 5
     discovery_queries: tuple[str, ...] = (
         "taxi tashkent",
         "taksi toshkent",
@@ -170,6 +172,8 @@ class Settings:
             admin_web_host=os.environ.get("ADMIN_WEB_HOST", "0.0.0.0"),
             admin_web_port=int(os.environ.get("ADMIN_WEB_PORT", "1311")),
             admin_web_token=os.environ.get("ADMIN_WEB_TOKEN"),
+            process_auto_restart=_parse_bool(os.environ.get("PROCESS_AUTO_RESTART", "true")),
+            process_restart_backoff_sec=int(os.environ.get("PROCESS_RESTART_BACKOFF_SEC", "5")),
             discovery_queries=tuple(
                 q.strip()
                 for q in os.environ.get(

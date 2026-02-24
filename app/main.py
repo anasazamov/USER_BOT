@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 
 from telethon import TelegramClient
@@ -23,6 +24,40 @@ from app.telegram_bot import build_userbot
 from app.actions import ActionExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_userbot_task(name: str, userbot: object) -> asyncio.Task[None]:
+    async def _runner() -> None:
+        await userbot.start()
+
+    task = asyncio.create_task(_runner(), name=name)
+
+    def _done_callback(done_task: asyncio.Task[None]) -> None:
+        with suppress(asyncio.CancelledError):
+            exc = done_task.exception()
+            if exc:
+                logger.error(
+                    "userbot_task_failed",
+                    extra={"action": "userbot_task", "reason": name},
+                    exc_info=exc,
+                )
+
+    task.add_done_callback(_done_callback)
+    return task
+
+
+async def _wait_until_any_userbot_stops(tasks: list[asyncio.Task[None]]) -> None:
+    if not tasks:
+        raise RuntimeError("no_userbot_tasks_started")
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        with suppress(asyncio.CancelledError):
+            exc = task.exception()
+            if exc:
+                raise exc
+            raise RuntimeError(f"userbot_disconnected:{task.get_name()}")
 
 
 async def main() -> None:
@@ -122,16 +157,24 @@ async def main() -> None:
         keyword_service,
         runtime_config=runtime_config,
     )
+    userbot_tasks: list[asyncio.Task[None]] = []
 
     try:
         if web_server:
             await web_server.start()
         if management_bot:
             await management_bot.start()
+        userbot_tasks.append(_spawn_userbot_task("userbot-primary", userbot))
+        await asyncio.sleep(2.0)
+        with suppress(Exception):
+            await invite_manager.run_once()
+        if discovery_manager:
+            with suppress(Exception):
+                await discovery_manager.run_once()
         await invite_manager.start()
         if discovery_manager:
             await discovery_manager.start()
-        await userbot.start()
+        await _wait_until_any_userbot_stops(userbot_tasks)
     finally:
         if web_server:
             with suppress(Exception):
@@ -144,9 +187,35 @@ async def main() -> None:
                 await management_bot.stop()
         with suppress(Exception):
             await invite_manager.stop()
-        await userbot.shutdown()
+        with suppress(Exception):
+            await userbot.shutdown()
+        for task in userbot_tasks:
+            task.cancel()
+        if userbot_tasks:
+            with suppress(Exception):
+                await asyncio.gather(*userbot_tasks, return_exceptions=True)
         await db.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    while True:
+        try:
+            asyncio.run(main())
+            if not Settings.from_env().process_auto_restart:
+                break
+            logger.warning("process_exited_restart", extra={"action": "process", "reason": "main_returned"})
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            logger.exception("process_crashed_restarting", extra={"action": "process", "reason": "crash"})
+            try:
+                restart_settings = Settings.from_env()
+            except Exception:
+                restart_settings = None
+            if restart_settings and not restart_settings.process_auto_restart:
+                raise
+        try:
+            restart_backoff = Settings.from_env().process_restart_backoff_sec
+        except Exception:
+            restart_backoff = 5
+        time.sleep(max(1, int(restart_backoff)))

@@ -30,6 +30,9 @@ class InviteLinkManager:
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="invite-link-manager")
 
+    async def run_once(self) -> None:
+        await self._run_iteration()
+
     async def stop(self) -> None:
         self._stop.set()
         if self._task:
@@ -39,22 +42,24 @@ class InviteLinkManager:
 
     async def _run(self) -> None:
         while not self._stop.is_set():
-            if not self.client.is_connected():
-                await asyncio.sleep(10)
-                continue
-            if not await self._is_authorized():
-                await asyncio.sleep(10)
-                continue
-            try:
-                links = await self.repository.fetch_active_invite_links()
-                logger.info("invite_iteration", extra={"action": "invite_scan", "count": len(links)})
-                for link in links:
-                    joined = await self.executor.try_join(link)
-                    if joined:
-                        logger.info("joined_private_group", extra={"action": "join", "reason": link[:120]})
-            except Exception:
-                logger.exception("invite_manager_iteration_failed")
-            await asyncio.sleep(self.interval_sec)
+            ran = await self._run_iteration()
+            await asyncio.sleep(self.interval_sec if ran else 10)
+
+    async def _run_iteration(self) -> bool:
+        if not self.client.is_connected():
+            return False
+        if not await self._is_authorized():
+            return False
+        try:
+            links = await self.repository.fetch_active_invite_links()
+            logger.info("invite_iteration", extra={"action": "invite_scan", "count": len(links)})
+            for link in links:
+                joined = await self.executor.try_join(link)
+                if joined:
+                    logger.info("joined_private_group", extra={"action": "join", "reason": link[:120]})
+        except Exception:
+            logger.exception("invite_manager_iteration_failed")
+        return True
 
     async def _is_authorized(self) -> bool:
         try:
