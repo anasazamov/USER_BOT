@@ -880,6 +880,17 @@ class AdminWebServer:
     let tgWebApp = null;
     let tgEventsBound = false;
     function el(id) {{ return document.getElementById(id); }}
+    function nvl(v, fallback) {{
+      return v === null || v === undefined ? fallback : v;
+    }}
+    function tryHaptic(kind, style) {{
+      try {{
+        if (!tgWebApp || !tgWebApp.HapticFeedback) return;
+        const h = tgWebApp.HapticFeedback;
+        if (kind === 'impact' && typeof h.impactOccurred === 'function') h.impactOccurred(style);
+        if (kind === 'notification' && typeof h.notificationOccurred === 'function') h.notificationOccurred(style);
+      }} catch (_e) {{}}
+    }}
     function esc(v) {{
       return String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }}
@@ -901,7 +912,7 @@ class AdminWebServer:
         btn.disabled = state.busy > 0;
       }}
       try {{
-        if (tgWebApp?.MainButton) {{
+        if (tgWebApp && tgWebApp.MainButton) {{
           if (state.busy > 0) tgWebApp.MainButton.showProgress(false);
           else tgWebApp.MainButton.hideProgress();
         }}
@@ -909,7 +920,7 @@ class AdminWebServer:
     }}
     function applyTelegramTheme() {{
       try {{
-        const tg = window.Telegram?.WebApp;
+        const tg = window.Telegram && window.Telegram.WebApp;
         if (!tg) return;
         tgWebApp = tg;
         document.documentElement.classList.add('tg-webapp');
@@ -942,11 +953,19 @@ class AdminWebServer:
           }});
           tg.onEvent('viewportChanged', () => {{
             // Sticky panels rely on layout metrics; force reflow-safe status timestamp touch.
-            el('lastRefreshBadge')?.offsetHeight;
+            const badge = el('lastRefreshBadge');
+            if (badge) badge.offsetHeight;
           }});
         }}
       }} catch (_e) {{}}
     }}
+    window.addEventListener('error', (e) => {{
+      setStatus(`JS error: ${{e && e.message ? e.message : 'unknown'}}`, true);
+    }});
+    window.addEventListener('unhandledrejection', (e) => {{
+      const msg = e && e.reason ? String(e.reason) : 'promise rejected';
+      setStatus(`JS error: ${{msg}}`, true);
+    }});
     async function req(url, body=null) {{
       const init = body ? {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}} : {{}};
       const res = await fetch(url + tokenQs, init);
@@ -960,11 +979,11 @@ class AdminWebServer:
       return data;
     }}
     function withFallback(raw, fallback) {{
-      const text = String(raw ?? '').trim();
+      const text = String(nvl(raw, '')).trim();
       return text === '' ? fallback : text;
     }}
     function parseDiscoveryQueriesInput(raw) {{
-      const text = String(raw ?? '').replace(/\r/g, '');
+      const text = String(nvl(raw, '')).replace(/\r/g, '');
       const out = [];
       const seen = new Set();
       for (const line of text.split('\n')) {{
@@ -991,10 +1010,10 @@ class AdminWebServer:
         : `<span class="badge off">${{esc(f)}}</span>`;
     }}
     function jsArg(v) {{
-      return JSON.stringify(v ?? '');
+      return JSON.stringify(nvl(v, ''));
     }}
     function updateSummary() {{
-      const kwKinds = state.keywords?.kinds || null;
+      const kwKinds = state.keywords && state.keywords.kinds ? state.keywords.kinds : null;
       let kwTotal = 0;
       let kwKindCount = 0;
       if (kwKinds) {{
@@ -1003,8 +1022,8 @@ class AdminWebServer:
           kwTotal += Array.isArray(values) ? values.length : 0;
         }}
       }}
-      const privateRows = Array.isArray(state.groups?.private) ? state.groups.private : [];
-      const publicRows = Array.isArray(state.groups?.public) ? state.groups.public : [];
+      const privateRows = state.groups && Array.isArray(state.groups.private) ? state.groups.private : [];
+      const publicRows = state.groups && Array.isArray(state.groups.public) ? state.groups.public : [];
       const privateActive = privateRows.filter(r => !!r.active).length;
       const publicJoined = publicRows.filter(r => !!r.joined).length;
       const cfgKeys = state.config ? Object.keys(state.config).length : 0;
@@ -1021,12 +1040,13 @@ class AdminWebServer:
     }}
     function renderKeywords() {{
       const holder = el('kwList');
-      if (!state.keywords?.kinds) {{
+      if (!(state.keywords && state.keywords.kinds)) {{
         holder.innerHTML = '<div class="muted">Keywordlar hali yuklanmagan.</div>';
         updateSummary();
         return;
       }}
-      const q = (el('kwSearch')?.value || '').trim().toLowerCase();
+      const kwSearchEl = el('kwSearch');
+      const q = ((kwSearchEl && kwSearchEl.value) || '').trim().toLowerCase();
       const groups = [];
       for (const [kind, rawValues] of Object.entries(state.keywords.kinds)) {{
         const values = Array.isArray(rawValues) ? rawValues : [];
@@ -1041,8 +1061,10 @@ class AdminWebServer:
     }}
     function renderGroups() {{
       const data = state.groups || {{ private: [], public: [] }};
-      const privateFilter = (el('privateSearch')?.value || '').trim().toLowerCase();
-      const publicFilter = (el('publicSearch')?.value || '').trim().toLowerCase();
+      const privateSearchEl = el('privateSearch');
+      const publicSearchEl = el('publicSearch');
+      const privateFilter = ((privateSearchEl && privateSearchEl.value) || '').trim().toLowerCase();
+      const publicFilter = ((publicSearchEl && publicSearchEl.value) || '').trim().toLowerCase();
 
       const privateRows = (data.private || []).filter(row => {{
         if (!privateFilter) return true;
@@ -1054,7 +1076,7 @@ class AdminWebServer:
         const rawLink = String(row.invite_link || '');
         pHtml.push(`<tr>
           <td class="mono" style="word-break:break-all;">${{esc(rawLink)}}</td>
-          <td class="mono">${{esc(row.source_chat_id ?? '-')}}</td>
+          <td class="mono">${{esc(nvl(row.source_chat_id, '-'))}}</td>
           <td>${{esc(fmtTime(row.last_seen_at))}}</td>
           <td>${{boolBadge(!!row.active)}}</td>
           <td>
@@ -1141,16 +1163,16 @@ class AdminWebServer:
         const cfg = data.config || {{}};
         state.config = cfg;
         cfg_forward_target.value = cfg.forward_target || '';
-        cfg_min_text_length.value = cfg.min_text_length ?? '';
-        cfg_per_group_actions_hour.value = cfg.per_group_actions_hour ?? '';
-        cfg_per_group_replies_10m.value = cfg.per_group_replies_10m ?? '';
-        cfg_join_limit_day.value = cfg.join_limit_day ?? '';
-        cfg_global_actions_minute.value = cfg.global_actions_minute ?? '';
-        cfg_min_human_delay_sec.value = cfg.min_human_delay_sec ?? '';
-        cfg_max_human_delay_sec.value = cfg.max_human_delay_sec ?? '';
+        cfg_min_text_length.value = nvl(cfg.min_text_length, '');
+        cfg_per_group_actions_hour.value = nvl(cfg.per_group_actions_hour, '');
+        cfg_per_group_replies_10m.value = nvl(cfg.per_group_replies_10m, '');
+        cfg_join_limit_day.value = nvl(cfg.join_limit_day, '');
+        cfg_global_actions_minute.value = nvl(cfg.global_actions_minute, '');
+        cfg_min_human_delay_sec.value = nvl(cfg.min_human_delay_sec, '');
+        cfg_max_human_delay_sec.value = nvl(cfg.max_human_delay_sec, '');
         cfg_discovery_enabled.checked = !!cfg.discovery_enabled;
-        cfg_discovery_query_limit.value = cfg.discovery_query_limit ?? '';
-        cfg_discovery_join_batch.value = cfg.discovery_join_batch ?? '';
+        cfg_discovery_query_limit.value = nvl(cfg.discovery_query_limit, '');
+        cfg_discovery_join_batch.value = nvl(cfg.discovery_join_batch, '');
         cfg_discovery_queries.value = (cfg.discovery_queries || []).join('\\n');
         updateSummary();
         if (showStatus) setStatus('Runtime config yuklandi');
@@ -1168,24 +1190,24 @@ class AdminWebServer:
         }}
         const current = state.config || {{}};
         const discoveryQueries = parseDiscoveryQueriesInput(cfg_discovery_queries.value);
-        const minDelay = withFallback(cfg_min_human_delay_sec.value, current.min_human_delay_sec ?? '');
-        const maxDelay = withFallback(cfg_max_human_delay_sec.value, current.max_human_delay_sec ?? '');
+        const minDelay = withFallback(cfg_min_human_delay_sec.value, nvl(current.min_human_delay_sec, ''));
+        const maxDelay = withFallback(cfg_max_human_delay_sec.value, nvl(current.max_human_delay_sec, ''));
         if (Number(minDelay) > Number(maxDelay)) {{
           setStatus('Max Human Delay Min Human Delay dan kichik bo\\'lmasin', true);
           return;
         }}
         const values = {{
-          forward_target: withFallback(cfg_forward_target.value, current.forward_target ?? ''),
-          min_text_length: withFallback(cfg_min_text_length.value, current.min_text_length ?? ''),
-          per_group_actions_hour: withFallback(cfg_per_group_actions_hour.value, current.per_group_actions_hour ?? ''),
-          per_group_replies_10m: withFallback(cfg_per_group_replies_10m.value, current.per_group_replies_10m ?? ''),
-          join_limit_day: withFallback(cfg_join_limit_day.value, current.join_limit_day ?? ''),
-          global_actions_minute: withFallback(cfg_global_actions_minute.value, current.global_actions_minute ?? ''),
+          forward_target: withFallback(cfg_forward_target.value, nvl(current.forward_target, '')),
+          min_text_length: withFallback(cfg_min_text_length.value, nvl(current.min_text_length, '')),
+          per_group_actions_hour: withFallback(cfg_per_group_actions_hour.value, nvl(current.per_group_actions_hour, '')),
+          per_group_replies_10m: withFallback(cfg_per_group_replies_10m.value, nvl(current.per_group_replies_10m, '')),
+          join_limit_day: withFallback(cfg_join_limit_day.value, nvl(current.join_limit_day, '')),
+          global_actions_minute: withFallback(cfg_global_actions_minute.value, nvl(current.global_actions_minute, '')),
           min_human_delay_sec: cfg_min_human_delay_sec.value,
           max_human_delay_sec: cfg_max_human_delay_sec.value,
           discovery_enabled: cfg_discovery_enabled.checked,
-          discovery_query_limit: withFallback(cfg_discovery_query_limit.value, current.discovery_query_limit ?? ''),
-          discovery_join_batch: withFallback(cfg_discovery_join_batch.value, current.discovery_join_batch ?? ''),
+          discovery_query_limit: withFallback(cfg_discovery_query_limit.value, nvl(current.discovery_query_limit, '')),
+          discovery_join_batch: withFallback(cfg_discovery_join_batch.value, nvl(current.discovery_join_batch, '')),
           discovery_queries: discoveryQueries.length ? discoveryQueries : (current.discovery_queries || []),
         }};
         values.min_human_delay_sec = minDelay;
@@ -1209,7 +1231,7 @@ class AdminWebServer:
           setStatus('Keyword bo\\'sh bo\\'lmasin', true);
           return;
         }}
-        tgWebApp?.HapticFeedback?.impactOccurred?.('light');
+        tryHaptic('impact', 'light');
         await req('/api/keywords', {{kind: kwKind.value, value}});
         kwValue.value = '';
         await loadKeywords(false);
@@ -1226,7 +1248,7 @@ class AdminWebServer:
           setStatus('O\\'chirish uchun keyword kiriting', true);
           return;
         }}
-        tgWebApp?.HapticFeedback?.impactOccurred?.('light');
+        tryHaptic('impact', 'light');
         await req('/api/keywords/delete', {{kind: kwKind.value, value}});
         kwDeleteValue.value = '';
         await loadKeywords(false);
@@ -1243,7 +1265,7 @@ class AdminWebServer:
           setStatus('Private invite link kiriting', true);
           return;
         }}
-        tgWebApp?.HapticFeedback?.impactOccurred?.('light');
+        tryHaptic('impact', 'light');
         await req('/api/groups/private/add', {{invite_link}});
         privateLink.value = '';
         await loadGroups(false);
@@ -1255,7 +1277,7 @@ class AdminWebServer:
     async function privateRemove(link) {{
       setBusy(true);
       try {{
-        tgWebApp?.HapticFeedback?.notificationOccurred?.('warning');
+        tryHaptic('notification', 'warning');
         await req('/api/groups/private/remove', {{invite_link: link}});
         await loadGroups(false);
         updateSummary();
@@ -1266,7 +1288,7 @@ class AdminWebServer:
     async function privateToggle(link, active) {{
       setBusy(true);
       try {{
-        tgWebApp?.HapticFeedback?.impactOccurred?.('medium');
+        tryHaptic('impact', 'medium');
         await req('/api/groups/private/toggle', {{invite_link: link, active}});
         await loadGroups(false);
         updateSummary();
@@ -1282,7 +1304,7 @@ class AdminWebServer:
           setStatus('Public username kiriting', true);
           return;
         }}
-        tgWebApp?.HapticFeedback?.impactOccurred?.('light');
+        tryHaptic('impact', 'light');
         await req('/api/groups/public/add', {{username}});
         publicUsername.value = '';
         await loadGroups(false);
@@ -1294,7 +1316,7 @@ class AdminWebServer:
     async function publicRemove(username) {{
       setBusy(true);
       try {{
-        tgWebApp?.HapticFeedback?.notificationOccurred?.('warning');
+        tryHaptic('notification', 'warning');
         await req('/api/groups/public/remove', {{username}});
         await loadGroups(false);
         updateSummary();
@@ -1305,7 +1327,7 @@ class AdminWebServer:
     async function publicToggle(username, active) {{
       setBusy(true);
       try {{
-        tgWebApp?.HapticFeedback?.impactOccurred?.('medium');
+        tryHaptic('impact', 'medium');
         await req('/api/groups/public/toggle', {{username, active}});
         await loadGroups(false);
         updateSummary();
