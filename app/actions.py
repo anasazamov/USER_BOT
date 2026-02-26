@@ -34,6 +34,23 @@ class BotPublisher(Protocol):
     async def edit_message(self, chat_id: str | int, message_id: int, text: str) -> None:
         ...
 
+    async def send_message_with_entities(
+        self,
+        chat_id: str | int,
+        text: str,
+        entities: list[dict[str, object]],
+    ) -> int:
+        ...
+
+    async def edit_message_with_entities(
+        self,
+        chat_id: str | int,
+        message_id: int,
+        text: str,
+        entities: list[dict[str, object]],
+    ) -> None:
+        ...
+
     async def broadcast_to_subscribers(self, text: str) -> tuple[int, int]:
         ...
 
@@ -115,6 +132,21 @@ class ActionExecutor:
             region_tag=decision.region_tag,
             status_label=status_label,
         )
+        bot_entity_payload: tuple[str, list[dict[str, object]]] | None = None
+        if (
+            self.bot_publisher
+            and (msg.envelope.sender_username or "").strip() == ""
+            and (msg.envelope.sender_id or 0) > 0
+        ):
+            bot_entity_payload = self.format_publish_message_bot_entities(
+                raw_text=msg.envelope.raw_text,
+                source_link=source_link,
+                region_tag=decision.region_tag,
+                sender_id=msg.envelope.sender_id,
+                sender_username=msg.envelope.sender_username,
+                sender_name=msg.envelope.sender_name,
+                status_label=status_label,
+            )
         if existing_publish:
             target_entity, target_message_id = existing_publish
             try:
@@ -129,11 +161,20 @@ class ActionExecutor:
                     },
                 )
                 if self.bot_publisher:
-                    await self.bot_publisher.edit_message(
-                        chat_id=target_entity,
-                        message_id=target_message_id,
-                        text=outbound,
-                    )
+                    if bot_entity_payload and hasattr(self.bot_publisher, "edit_message_with_entities"):
+                        entity_text, entity_list = bot_entity_payload
+                        await self.bot_publisher.edit_message_with_entities(
+                            chat_id=target_entity,
+                            message_id=target_message_id,
+                            text=entity_text,
+                            entities=entity_list,
+                        )
+                    else:
+                        await self.bot_publisher.edit_message(
+                            chat_id=target_entity,
+                            message_id=target_message_id,
+                            text=outbound,
+                        )
                 else:
                     await self.client.edit_message(
                         entity=target_entity,
@@ -195,7 +236,15 @@ class ActionExecutor:
         )
         sent_message_id = 0
         if self.bot_publisher:
-            sent_message_id = await self.bot_publisher.send_message(chat_id=target_entity, text=outbound)
+            if bot_entity_payload and hasattr(self.bot_publisher, "send_message_with_entities"):
+                entity_text, entity_list = bot_entity_payload
+                sent_message_id = await self.bot_publisher.send_message_with_entities(
+                    chat_id=target_entity,
+                    text=entity_text,
+                    entities=entity_list,
+                )
+            else:
+                sent_message_id = await self.bot_publisher.send_message(chat_id=target_entity, text=outbound)
         else:
             sent_message = await self.client.send_message(
                 entity=target_entity,
@@ -577,6 +626,133 @@ class ActionExecutor:
             lines.append(f'Aloqa: <a href="{safe_sender_href}">{safe_sender_text}</a>')
 
         return "\n\n".join(lines)
+
+    @staticmethod
+    def format_publish_message_bot_entities(
+        raw_text: str,
+        source_link: str,
+        region_tag: str | None,
+        sender_id: int | None = None,
+        sender_username: str | None = None,
+        sender_name: str | None = None,
+        status_label: str = "Yangi",
+    ) -> tuple[str, list[dict[str, object]]]:
+        region = region_tag or "#Uzbekiston"
+        body = (raw_text or "").strip() or "(matn topilmadi)"
+        source_value = source_link or "private chat"
+        sender_label = ActionExecutor._build_sender_profile_text(
+            sender_id=sender_id,
+            sender_username=sender_username,
+            sender_name=sender_name,
+        )
+
+        tail_plain = f"\n\n{region}\n\nStatus: {status_label}\n\nManba: {source_value}"
+        if sender_label:
+            tail_plain += f"\n\nAloqa: {sender_label}"
+        head_limit = max(120, 3900 - len(tail_plain))
+        compact_body = (body[:head_limit] + "...") if len(body) > head_limit else body
+
+        text = ""
+        entities: list[dict[str, object]] = []
+
+        def _append(chunk: str) -> int:
+            nonlocal text
+            start = ActionExecutor._utf16_length(text)
+            text += chunk
+            return start
+
+        def _append_line(chunk: str) -> int:
+            if text:
+                _append("\n\n")
+            return _append(chunk)
+
+        title_line = "Taxi buyurtma:"
+        title_offset = _append_line(title_line)
+        entities.append(
+            {
+                "type": "bold",
+                "offset": title_offset,
+                "length": ActionExecutor._utf16_length(title_line),
+            }
+        )
+
+        _append_line(compact_body)
+        _append_line(region)
+
+        status_prefix = "Status: "
+        status_line = f"{status_prefix}{status_label}"
+        status_offset = _append_line(status_line)
+        entities.append(
+            {
+                "type": "bold",
+                "offset": status_offset,
+                "length": ActionExecutor._utf16_length(status_prefix.rstrip()),
+            }
+        )
+
+        source_prefix = "Manba: "
+        source_line = f"{source_prefix}{source_value}"
+        source_offset = _append_line(source_line)
+        if source_link:
+            entities.append(
+                {
+                    "type": "text_link",
+                    "offset": source_offset + ActionExecutor._utf16_length(source_prefix),
+                    "length": ActionExecutor._utf16_length(source_value),
+                    "url": source_link,
+                }
+            )
+
+        if sender_label:
+            contact_prefix = "Aloqa: "
+            contact_line = f"{contact_prefix}{sender_label}"
+            contact_offset = _append_line(contact_line)
+            username = (sender_username or "").strip().lstrip("@")
+            mention_offset = contact_offset + ActionExecutor._utf16_length(contact_prefix)
+            mention_length = ActionExecutor._utf16_length(sender_label)
+            if username:
+                entities.append(
+                    {
+                        "type": "text_link",
+                        "offset": mention_offset,
+                        "length": mention_length,
+                        "url": f"https://t.me/{username}",
+                    }
+                )
+            elif sender_id and sender_id > 0:
+                entities.append(
+                    {
+                        "type": "text_mention",
+                        "offset": mention_offset,
+                        "length": mention_length,
+                        "user": ActionExecutor._build_bot_api_text_mention_user(
+                            sender_id=sender_id,
+                            sender_name=sender_name,
+                            fallback_label=sender_label,
+                        ),
+                    }
+                )
+
+        return text, entities
+
+    @staticmethod
+    def _build_bot_api_text_mention_user(
+        sender_id: int,
+        sender_name: str | None = None,
+        fallback_label: str = "Foydalanuvchi",
+    ) -> dict[str, object]:
+        first_name = " ".join((sender_name or "").split()).strip()
+        if not first_name:
+            first_name = (fallback_label or "Foydalanuvchi").strip() or "Foydalanuvchi"
+        return {
+            "id": int(sender_id),
+            "is_bot": False,
+            "first_name": first_name[:64],
+        }
+
+    @staticmethod
+    def _utf16_length(value: str) -> int:
+        return len((value or "").encode("utf-16-le")) // 2
 
     @staticmethod
     def _extract_joined_chat_id(result: object) -> int | None:

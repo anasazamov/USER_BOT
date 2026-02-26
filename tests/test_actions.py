@@ -86,6 +86,22 @@ def test_build_sender_profile_link_prefers_username() -> None:
     )
 
 
+def test_format_publish_message_bot_entities_uses_text_mention_without_username() -> None:
+    text, entities = ActionExecutor.format_publish_message_bot_entities(
+        raw_text="Toshkentdan Samarqandga 1 kishi bor",
+        source_link="https://t.me/testgroup/123",
+        region_tag="#SamarqandViloyati",
+        sender_id=123456789,
+        sender_username=None,
+        sender_name="Шухрат",
+        status_label="Yangi",
+    )
+    assert "Aloqa: Шухрат" in text
+    mention = next(entity for entity in entities if entity.get("type") == "text_mention")
+    assert mention["user"]["id"] == 123456789
+    assert mention["user"]["first_name"] == "Шухрат"
+
+
 def test_execute_skips_rate_limit_when_limits_set_to_zero() -> None:
     class _Cooldown:
         def __init__(self) -> None:

@@ -86,6 +86,24 @@ class TelegramManagementBot:
         result = await self._api_call("sendMessage", payload)
         return int((result or {}).get("message_id") or 0)
 
+    async def send_message_with_entities(
+        self,
+        chat_id: str | int,
+        text: str,
+        entities: list[dict[str, Any]],
+        reply_markup: dict[str, Any] | None = None,
+    ) -> int:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+            "entities": entities,
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        result = await self._api_call("sendMessage", payload)
+        return int((result or {}).get("message_id") or 0)
+
     async def edit_message(
         self,
         chat_id: str | int,
@@ -99,6 +117,25 @@ class TelegramManagementBot:
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        await self._api_call("editMessageText", payload)
+
+    async def edit_message_with_entities(
+        self,
+        chat_id: str | int,
+        message_id: int,
+        text: str,
+        entities: list[dict[str, Any]],
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "disable_web_page_preview": True,
+            "entities": entities,
         }
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
