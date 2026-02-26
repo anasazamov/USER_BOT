@@ -71,7 +71,14 @@ async def main() -> None:
     keyword_service = KeywordService(repository)
     await keyword_service.initialize()
     runtime_config = RuntimeConfigService(settings, repository)
-    await runtime_config.initialize()
+    if settings.runtime_config_sync_env_on_startup:
+        await runtime_config.sync_from_settings()
+        logger.info(
+            "runtime_config_startup_synced",
+            extra={"action": "runtime_config", "reason": "env_synced_to_db"},
+        )
+    else:
+        await runtime_config.initialize()
     runtime = runtime_config.snapshot()
     logger.info(
         "runtime_config_effective",

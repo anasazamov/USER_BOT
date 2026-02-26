@@ -47,6 +47,7 @@ class Settings:
 
     forward_target: str = "me"
     forward_target_2: Optional[str] = None
+    forward_priority_only: bool = True
     min_text_length: int = 18
 
     per_group_actions_hour: int = 15
@@ -73,6 +74,7 @@ class Settings:
     admin_web_token: Optional[str] = None
     process_auto_restart: bool = True
     process_restart_backoff_sec: int = 5
+    runtime_config_sync_env_on_startup: bool = True
     discovery_queries: tuple[str, ...] = (
         "taxi tashkent",
         "taksi toshkent",
@@ -148,6 +150,7 @@ class Settings:
             owner_user_id=owner_user_id,
             forward_target=os.environ.get("FORWARD_TARGET", "me"),
             forward_target_2=(os.environ.get("FORWARD_TARGET2") or "").strip() or None,
+            forward_priority_only=_parse_bool(os.environ.get("FORWARD_PRIORITY_ONLY", "true")),
             min_text_length=int(os.environ.get("MIN_TEXT_LENGTH", "18")),
             per_group_actions_hour=int(os.environ.get("PER_GROUP_ACTIONS_HOUR", "15")),
             per_group_replies_10m=int(os.environ.get("PER_GROUP_REPLIES_10M", "3")),
@@ -174,6 +177,9 @@ class Settings:
             admin_web_token=os.environ.get("ADMIN_WEB_TOKEN"),
             process_auto_restart=_parse_bool(os.environ.get("PROCESS_AUTO_RESTART", "true")),
             process_restart_backoff_sec=int(os.environ.get("PROCESS_RESTART_BACKOFF_SEC", "5")),
+            runtime_config_sync_env_on_startup=_parse_bool(
+                os.environ.get("RUNTIME_CONFIG_SYNC_ENV_ON_STARTUP", "true")
+            ),
             discovery_queries=tuple(
                 q.strip()
                 for q in os.environ.get(

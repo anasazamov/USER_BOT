@@ -62,6 +62,22 @@ class TelegramUserbot:
         async def process_event(event: events.common.EventCommon, source: str) -> None:
             if event.chat_id is None:
                 return
+            chat_obj = getattr(event, "chat", None)
+            chat_username = getattr(chat_obj, "username", None)
+            chat_title = getattr(chat_obj, "title", None)
+            if self.executor.is_forward_destination_chat(int(event.chat_id), chat_username):
+                logger.info(
+                    "message_filtered",
+                    extra={
+                        "action": "filter_drop",
+                        "source": source,
+                        "chat_id": int(event.chat_id),
+                        "message_id": int(getattr(event, "id", 0) or 0),
+                        "reason": "forward_destination_ignored",
+                        "chat_ref": f"@{chat_username}" if chat_username else (chat_title or str(int(event.chat_id))),
+                    },
+                )
+                return
 
             raw_text = self._extract_text(event)
             if raw_text:
@@ -76,8 +92,8 @@ class TelegramUserbot:
                 sender_username=sender_username,
                 sender_name=sender_name,
                 raw_text=raw_text,
-                chat_username=getattr(getattr(event, "chat", None), "username", None),
-                chat_title=getattr(getattr(event, "chat", None), "title", None),
+                chat_username=chat_username,
+                chat_title=chat_title,
                 source=source,
             )
 
@@ -323,6 +339,21 @@ class TelegramUserbot:
         chat_title = getattr(dialog, "name", "") or ""
         entity = getattr(dialog, "entity")
         chat_username = getattr(entity, "username", None)
+        if self.executor.is_forward_destination_chat(chat_id, chat_username):
+            latest_message_id = self._dialog_latest_message_id(dialog)
+            if latest_message_id > 0:
+                self._mark_chat_seen(chat_id, latest_message_id)
+            logger.info(
+                "history_chat_skipped",
+                extra={
+                    "action": "history_chat_scan",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "count": 0,
+                    "reason": "forward_destination_ignored",
+                },
+            )
+            return 0
         last_seen = self._chat_last_seen.get(chat_id, 0)
         if last_seen <= 0:
             latest_message_id = self._dialog_latest_message_id(dialog)
@@ -686,17 +717,8 @@ class TelegramUserbot:
         return f"{compact[: max(0, limit - 3)]}..."
 
     @staticmethod
-    def _is_target_match(target: str | int, chat_id: int, chat_username: str | None) -> bool:
-        resolved = ActionExecutor._resolve_forward_target(target)
-        if isinstance(resolved, int):
-            return chat_id == resolved
-        normalized_target = str(resolved).strip().lstrip("@").lower()
-        if not normalized_target or normalized_target in {"me", "self"}:
-            return False
-        normalized_chat_username = (chat_username or "").strip().lstrip("@").lower()
-        if not normalized_chat_username:
-            return False
-        return normalized_chat_username == normalized_target
+    def _is_target_match(target: str | int | None, chat_id: int, chat_username: str | None) -> bool:
+        return ActionExecutor._is_target_match(target, chat_id=chat_id, chat_username=chat_username)
 
 
 def build_userbot(

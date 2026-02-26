@@ -75,6 +75,17 @@ def test_build_sender_profile_link_from_sender_id() -> None:
     assert ActionExecutor._build_sender_profile_link(-100123) == ""
 
 
+def test_build_sender_profile_link_prefers_username() -> None:
+    assert (
+        ActionExecutor._build_sender_profile_link(123456789, sender_username="azizbek")
+        == "https://t.me/azizbek"
+    )
+    assert (
+        ActionExecutor._build_sender_profile_link(123456789, sender_username="@azizbek")
+        == "https://t.me/azizbek"
+    )
+
+
 def test_execute_skips_rate_limit_when_limits_set_to_zero() -> None:
     class _Cooldown:
         def __init__(self) -> None:
@@ -133,7 +144,7 @@ def test_execute_skips_rate_limit_when_limits_set_to_zero() -> None:
 
     import asyncio
     async def run() -> None:
-        settings = Settings(api_id=1, api_hash="hash")
+        settings = Settings(api_id=1, api_hash="hash", forward_priority_only=False)
         cooldown = _Cooldown()
         bot_publisher = _BotPublisher()
         executor = ActionExecutor(
@@ -197,6 +208,7 @@ def test_resolve_forward_target_for_chat_uses_priority_group_links_2_username() 
         api_hash="hash",
         forward_target="@default_target",
         forward_target_2="@special_target",
+        forward_priority_only=False,
         priority_group_links_2=("@source_group",),
     )
     executor = ActionExecutor(
@@ -296,6 +308,7 @@ def test_resolve_forward_target_for_chat_uses_private_invite_source_cache() -> N
         api_hash="hash",
         forward_target="@default_target",
         forward_target_2="@special_target",
+        forward_priority_only=False,
         priority_group_links_2=(invite_link,),
     )
     executor = ActionExecutor(
@@ -313,3 +326,143 @@ def test_resolve_forward_target_for_chat_uses_private_invite_source_cache() -> N
         executor.resolve_forward_target_for_chat(chat_id=-1001112223334, chat_username=None)
         == "@default_target"
     )
+
+
+def test_resolve_forward_target_for_chat_priority_only_skips_non_priority_sources() -> None:
+    class _Cooldown:
+        async def allow_action(self, chat_id: int, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_global(self, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_join(self, limit: int) -> bool:
+            return True
+
+    class _Repo:
+        async def insert_action(self, chat_id: int, message_id: int, action: str, status: str) -> None:
+            return None
+
+    class _Client:
+        async def send_message(
+            self,
+            entity: str | int,
+            message: str,
+            link_preview: bool = False,
+            parse_mode: str | None = None,
+        ) -> object:
+            class _Msg:
+                id = 1
+
+            return _Msg()
+
+    settings = Settings(
+        api_id=1,
+        api_hash="hash",
+        forward_target="@default_target",
+        forward_target_2="@special_target",
+        forward_priority_only=True,
+        priority_group_links=("@list1_group",),
+        priority_group_links_2=("@list2_group",),
+    )
+    executor = ActionExecutor(
+        client=_Client(),  # type: ignore[arg-type]
+        settings=settings,
+        cooldown=_Cooldown(),  # type: ignore[arg-type]
+        repository=_Repo(),  # type: ignore[arg-type]
+    )
+    assert executor.resolve_forward_target_for_chat(chat_id=-10099, chat_username="random_group") is None
+
+
+def test_resolve_forward_target_for_chat_priority_only_disabled_falls_back_default() -> None:
+    class _Cooldown:
+        async def allow_action(self, chat_id: int, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_global(self, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_join(self, limit: int) -> bool:
+            return True
+
+    class _Repo:
+        async def insert_action(self, chat_id: int, message_id: int, action: str, status: str) -> None:
+            return None
+
+    class _Client:
+        async def send_message(
+            self,
+            entity: str | int,
+            message: str,
+            link_preview: bool = False,
+            parse_mode: str | None = None,
+        ) -> object:
+            class _Msg:
+                id = 1
+
+            return _Msg()
+
+    settings = Settings(
+        api_id=1,
+        api_hash="hash",
+        forward_target="@default_target",
+        forward_target_2="@special_target",
+        forward_priority_only=False,
+        priority_group_links=("@list1_group",),
+        priority_group_links_2=("@list2_group",),
+    )
+    executor = ActionExecutor(
+        client=_Client(),  # type: ignore[arg-type]
+        settings=settings,
+        cooldown=_Cooldown(),  # type: ignore[arg-type]
+        repository=_Repo(),  # type: ignore[arg-type]
+    )
+    assert (
+        executor.resolve_forward_target_for_chat(chat_id=-10099, chat_username="random_group")
+        == "@default_target"
+    )
+
+
+def test_is_forward_destination_chat_matches_default_and_second_targets() -> None:
+    class _Cooldown:
+        async def allow_action(self, chat_id: int, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_global(self, action: str, limit: int, window: int) -> bool:
+            return True
+
+        async def allow_join(self, limit: int) -> bool:
+            return True
+
+    class _Repo:
+        async def insert_action(self, chat_id: int, message_id: int, action: str, status: str) -> None:
+            return None
+
+    class _Client:
+        async def send_message(
+            self,
+            entity: str | int,
+            message: str,
+            link_preview: bool = False,
+            parse_mode: str | None = None,
+        ) -> object:
+            class _Msg:
+                id = 1
+
+            return _Msg()
+
+    settings = Settings(
+        api_id=1,
+        api_hash="hash",
+        forward_target="-1001112223334",
+        forward_target_2="@special_target",
+    )
+    executor = ActionExecutor(
+        client=_Client(),  # type: ignore[arg-type]
+        settings=settings,
+        cooldown=_Cooldown(),  # type: ignore[arg-type]
+        repository=_Repo(),  # type: ignore[arg-type]
+    )
+    assert executor.is_forward_destination_chat(chat_id=-1001112223334, chat_username=None) is True
+    assert executor.is_forward_destination_chat(chat_id=-100999, chat_username="special_target") is True
+    assert executor.is_forward_destination_chat(chat_id=-100999, chat_username="other_group") is False

@@ -66,26 +66,12 @@ class RuntimeConfigService:
         self.repository = repository
         self._lock = asyncio.Lock()
         self._version = 0
-        self._snapshot = RuntimeConfigSnapshot(
-            forward_target=settings.forward_target,
-            min_text_length=settings.min_text_length,
-            per_group_actions_hour=settings.per_group_actions_hour,
-            per_group_replies_10m=settings.per_group_replies_10m,
-            join_limit_day=settings.join_limit_day,
-            global_actions_minute=settings.global_actions_minute,
-            min_human_delay_sec=settings.min_human_delay_sec,
-            max_human_delay_sec=settings.max_human_delay_sec,
-            discovery_enabled=settings.discovery_enabled,
-            discovery_query_limit=settings.discovery_query_limit,
-            discovery_join_batch=settings.discovery_join_batch,
-            discovery_queries=settings.discovery_queries,
-            version=0,
-        )
+        self._snapshot = RuntimeConfigSnapshot(**self._build_snapshot(self._settings_payload()), version=0)
 
     async def initialize(self) -> None:
         async with self._lock:
             stored = await self.repository.fetch_runtime_config()
-            current = self._snapshot.as_json()
+            current = self._settings_payload()
             for key, value in stored.items():
                 if key not in CONFIG_KEYS:
                     continue
@@ -97,6 +83,19 @@ class RuntimeConfigService:
             snapshot = self._build_snapshot(current)
             self._version += 1
             self._snapshot = RuntimeConfigSnapshot(**snapshot, version=self._version)
+
+    async def sync_from_settings(self) -> RuntimeConfigSnapshot:
+        async with self._lock:
+            current = self._settings_payload()
+            snapshot = self._build_snapshot(current)
+            self._version += 1
+            self._snapshot = RuntimeConfigSnapshot(**snapshot, version=self._version)
+            for key in CONFIG_KEYS:
+                await self.repository.upsert_runtime_config(
+                    key,
+                    self._serialize_value(key, current[key]),
+                )
+            return self._snapshot
 
     def snapshot(self) -> RuntimeConfigSnapshot:
         return self._snapshot
@@ -227,6 +226,22 @@ class RuntimeConfigService:
         if key == "discovery_enabled":
             return "true" if bool(value) else "false"
         return str(value)
+
+    def _settings_payload(self) -> dict[str, Any]:
+        return {
+            "forward_target": self.settings.forward_target,
+            "min_text_length": self.settings.min_text_length,
+            "per_group_actions_hour": self.settings.per_group_actions_hour,
+            "per_group_replies_10m": self.settings.per_group_replies_10m,
+            "join_limit_day": self.settings.join_limit_day,
+            "global_actions_minute": self.settings.global_actions_minute,
+            "min_human_delay_sec": self.settings.min_human_delay_sec,
+            "max_human_delay_sec": self.settings.max_human_delay_sec,
+            "discovery_enabled": self.settings.discovery_enabled,
+            "discovery_query_limit": self.settings.discovery_query_limit,
+            "discovery_join_batch": self.settings.discovery_join_batch,
+            "discovery_queries": tuple(self.settings.discovery_queries),
+        }
 
     def _build_snapshot(self, current: dict[str, Any]) -> dict[str, Any]:
         min_delay = float(current["min_human_delay_sec"])

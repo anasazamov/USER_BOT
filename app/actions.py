@@ -95,7 +95,10 @@ class ActionExecutor:
         if not self.bot_publisher:
             await self._human_pause()
         source_link = self._build_source_link(msg)
-        sender_profile_link = self._build_sender_profile_link(msg.envelope.sender_id)
+        sender_profile_link = self._build_sender_profile_link(
+            msg.envelope.sender_id,
+            sender_username=msg.envelope.sender_username,
+        )
         sender_profile_text = self._build_sender_profile_text(
             sender_id=msg.envelope.sender_id,
             sender_username=msg.envelope.sender_username,
@@ -170,6 +173,17 @@ class ActionExecutor:
             chat_username=msg.envelope.chat_username,
             runtime_snapshot=runtime,
         )
+        if target_entity is None:
+            logger.info(
+                "publish_skipped_no_route",
+                extra={
+                    "action": "publish_skip",
+                    "chat_id": chat_id,
+                    "message_id": msg.envelope.message_id,
+                    "reason": "source_not_in_priority_routes",
+                },
+            )
+            return
         logger.info(
             "publish_attempt",
             extra={
@@ -295,18 +309,52 @@ class ActionExecutor:
         chat_id: int,
         chat_username: str | None,
         runtime_snapshot: object | None = None,
-    ) -> str | int:
+    ) -> str | int | None:
         runtime = runtime_snapshot if runtime_snapshot is not None else (
             self.runtime_config.snapshot() if self.runtime_config else None
         )
         default_target = runtime.forward_target if runtime else self.settings.forward_target
         second_target = (self.settings.forward_target_2 or "").strip()
-        if second_target:
-            for source_ref in self.settings.priority_group_links_2:
-                if self._is_source_route_match(source_ref, chat_id=chat_id, chat_username=chat_username):
-                    return self._resolve_forward_target(second_target)
+        matches_priority_2 = self._matches_source_routes(
+            self.settings.priority_group_links_2,
+            chat_id=chat_id,
+            chat_username=chat_username,
+        )
+        if matches_priority_2 and second_target:
+            return self._resolve_forward_target(second_target)
 
+        priority_only_enabled = bool(self.settings.forward_priority_only)
+        has_priority_sources = bool(self.settings.priority_group_links or self.settings.priority_group_links_2)
+        if priority_only_enabled and has_priority_sources:
+            matches_priority_1 = self._matches_source_routes(
+                self.settings.priority_group_links,
+                chat_id=chat_id,
+                chat_username=chat_username,
+            )
+            if matches_priority_1:
+                return self._resolve_forward_target(default_target)
+            if matches_priority_2:
+                # If target2 is not configured, keep list2 on default target instead of dropping.
+                return self._resolve_forward_target(default_target)
+            return None
         return self._resolve_forward_target(default_target)
+
+    def is_forward_destination_chat(
+        self,
+        chat_id: int,
+        chat_username: str | None,
+        runtime_snapshot: object | None = None,
+    ) -> bool:
+        runtime = runtime_snapshot if runtime_snapshot is not None else (
+            self.runtime_config.snapshot() if self.runtime_config else None
+        )
+        default_target = runtime.forward_target if runtime else self.settings.forward_target
+        if self._is_target_match(default_target, chat_id=chat_id, chat_username=chat_username):
+            return True
+        second_target = (self.settings.forward_target_2 or "").strip()
+        if second_target and self._is_target_match(second_target, chat_id=chat_id, chat_username=chat_username):
+            return True
+        return False
 
     @staticmethod
     def _resolve_forward_target(target: str | int) -> str | int:
@@ -361,6 +409,19 @@ class ActionExecutor:
             return False
         return normalized_chat_username == normalized_source
 
+    def _matches_source_routes(
+        self,
+        sources: tuple[str, ...],
+        chat_id: int,
+        chat_username: str | None,
+    ) -> bool:
+        if not sources:
+            return False
+        for source_ref in sources:
+            if self._is_source_route_match(source_ref, chat_id=chat_id, chat_username=chat_username):
+                return True
+        return False
+
     @classmethod
     def _normalize_source_route_value(cls, value: str | int) -> str | int | None:
         if isinstance(value, int):
@@ -377,6 +438,26 @@ class ActionExecutor:
             return int(raw)
         normalized = raw.lstrip("@").strip().lower()
         return normalized or None
+
+    @classmethod
+    def _is_target_match(
+        cls,
+        target: str | int | None,
+        chat_id: int,
+        chat_username: str | None,
+    ) -> bool:
+        if target is None:
+            return False
+        resolved = cls._resolve_forward_target(target)
+        if isinstance(resolved, int):
+            return chat_id == resolved
+        normalized_target = str(resolved).strip().lstrip("@").lower()
+        if not normalized_target or normalized_target in {"me", "self"}:
+            return False
+        normalized_chat_username = (chat_username or "").strip().lstrip("@").lower()
+        if not normalized_chat_username:
+            return False
+        return normalized_chat_username == normalized_target
 
     @staticmethod
     def _normalize_private_invite_ref(value: str | int) -> str | None:
@@ -430,7 +511,13 @@ class ActionExecutor:
         return ""
 
     @staticmethod
-    def _build_sender_profile_link(sender_id: int | None) -> str:
+    def _build_sender_profile_link(
+        sender_id: int | None,
+        sender_username: str | None = None,
+    ) -> str:
+        username = (sender_username or "").strip().lstrip("@")
+        if username:
+            return f"https://t.me/{username}"
         if not sender_id or sender_id <= 0:
             return ""
         return f"tg://user?id={sender_id}"

@@ -71,3 +71,39 @@ def test_settings_telegram_read_ack_can_be_enabled(monkeypatch) -> None:
 
     settings = Settings.from_env()
     assert settings.telegram_read_ack_enabled is True
+
+
+def test_settings_runtime_config_sync_env_on_startup_default_true(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.delenv("RUNTIME_CONFIG_SYNC_ENV_ON_STARTUP", raising=False)
+
+    settings = Settings.from_env()
+    assert settings.runtime_config_sync_env_on_startup is True
+
+
+def test_settings_runtime_config_sync_env_on_startup_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.setenv("RUNTIME_CONFIG_SYNC_ENV_ON_STARTUP", "false")
+
+    settings = Settings.from_env()
+    assert settings.runtime_config_sync_env_on_startup is False
+
+
+def test_settings_forward_priority_only_default_true(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.delenv("FORWARD_PRIORITY_ONLY", raising=False)
+
+    settings = Settings.from_env()
+    assert settings.forward_priority_only is True
+
+
+def test_settings_forward_priority_only_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("TG_API_ID", "1")
+    monkeypatch.setenv("TG_API_HASH", "hash")
+    monkeypatch.setenv("FORWARD_PRIORITY_ONLY", "false")
+
+    settings = Settings.from_env()
+    assert settings.forward_priority_only is False
