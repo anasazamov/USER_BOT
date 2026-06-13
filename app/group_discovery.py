@@ -59,6 +59,33 @@ _TITLE_SEPARATOR_RE = re.compile(r"[_\-./]+")
 _MIN_MEMBERS = 30
 _MAX_MEMBERS = 200_000
 
+# High-priority taxi corridors. Each iteration expands these into many query
+# variants (`{a} {b} taksi`, `{a}dan {b}ga`, `{a} {b}`, both directions) so the
+# crawler hits the same route from every angle Telegram's full-text search might
+# match. Used to amplify the runtime-config `discovery_queries` list.
+_PRIORITY_ROUTE_CORRIDORS: tuple[tuple[str, str], ...] = (
+    ("samarqand", "toshkent"),
+    ("samarqand", "vodiy"),
+    ("samarqand", "fargona"),
+    ("samarqand", "andijon"),
+    ("samarqand", "namangan"),
+    ("samarqand", "qoqon"),
+    ("urgut", "toshkent"),
+    ("urgut", "samarqand"),
+    ("jartepa", "samarqand"),
+)
+
+_ROUTE_QUERY_TEMPLATES: tuple[str, ...] = (
+    "{a} {b} taksi",
+    "{a}dan {b}ga",
+    "{a} {b}",
+)
+
+# Pacing between API calls so concurrent queries don't trip FloodWait. Telegram's
+# contacts.search and messages.searchGlobal are loosely rate-limited; one second
+# is the empirical sweet spot for sustained crawling without backoff.
+_DISCOVERY_QUERY_SLEEP_SEC = 1.0
+
 
 class GroupDiscoveryManager:
     def __init__(
@@ -127,22 +154,51 @@ class GroupDiscoveryManager:
             queries = runtime.discovery_queries if runtime else self.queries
             query_limit = runtime.discovery_query_limit if runtime else self.query_limit
             join_batch = runtime.discovery_join_batch if runtime else self.join_batch
-            prioritized_queries = self._prioritize_queries(queries)
+            expanded_queries = self._expand_with_route_queries(queries)
+            prioritized_queries = self._prioritize_queries(expanded_queries)
             logger.info(
                 "group_discovery_iteration",
-                extra={"action": "discovery", "count": len(queries), "reason": f"limit={query_limit}"},
+                extra={
+                    "action": "discovery",
+                    "count": len(prioritized_queries),
+                    "reason": f"base={len(queries)} expanded={len(prioritized_queries)} limit={query_limit}",
+                },
             )
 
+            total_via_titles = 0
+            total_via_messages = 0
             for query in prioritized_queries:
-                await self._discover_query(query, query_limit=query_limit)
+                total_via_titles += await self._discover_query(query, query_limit=query_limit)
+                total_via_messages += await self._discover_query_via_messages(
+                    query, query_limit=query_limit
+                )
+                await asyncio.sleep(_DISCOVERY_QUERY_SLEEP_SEC)
+            logger.info(
+                "group_discovery_iteration_done",
+                extra={
+                    "action": "discovery",
+                    "reason": (
+                        f"queries={len(prioritized_queries)} "
+                        f"via_titles={total_via_titles} "
+                        f"via_messages={total_via_messages}"
+                    ),
+                },
+            )
             await self._join_pending(join_batch)
         except Exception:
             logger.exception("group_discovery_iteration_failed")
         return True
 
-    async def _discover_query(self, query: str, query_limit: int | None = None) -> None:
+    async def _discover_query(self, query: str, query_limit: int | None = None) -> int:
         limit = query_limit if query_limit is not None else self.query_limit
-        result = await self.client(functions.contacts.SearchRequest(q=query, limit=limit))
+        try:
+            result = await self.client(functions.contacts.SearchRequest(q=query, limit=limit))
+        except Exception as exc:
+            logger.warning(
+                "discovery_query_failed",
+                extra={"action": "discovery_query", "reason": f"contacts_search:{exc!r}", "source_query": query},
+            )
+            return 0
         discovered = 0
         rejected_relevance = 0
         rejected_size = 0
@@ -203,6 +259,85 @@ class GroupDiscoveryManager:
                 "rejected_size": rejected_size,
             },
         )
+        return discovered
+
+    async def _discover_query_via_messages(
+        self, query: str, query_limit: int | None = None
+    ) -> int:
+        """Find groups by searching public *message content*, not titles.
+
+        Telegram's contacts.search only matches title/bio/username — fast but narrow.
+        messages.searchGlobal matches the body of recent public messages, so groups
+        that don't have "taxi" in their name but are full of taxi orders still come
+        back. We then run the same relevance filter on the source chat.
+        """
+        limit = max(min(query_limit or self.query_limit, 100), 1)
+        try:
+            result = await self.client(
+                functions.messages.SearchGlobalRequest(
+                    q=query,
+                    filter=types.InputMessagesFilterEmpty(),
+                    min_date=0,
+                    max_date=0,
+                    offset_rate=0,
+                    offset_peer=types.InputPeerEmpty(),
+                    offset_id=0,
+                    limit=limit,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "discovery_query_failed",
+                extra={
+                    "action": "discovery_query_msg",
+                    "reason": f"messages_search:{exc!r}",
+                    "source_query": query,
+                },
+            )
+            return 0
+
+        discovered = 0
+        rejected_relevance = 0
+        rejected_size = 0
+        seen_peer_ids: set[int] = set()
+        for chat in getattr(result, "chats", []) or []:
+            if not isinstance(chat, types.Channel):
+                continue
+            if not (getattr(chat, "megagroup", False) or getattr(chat, "gigagroup", False)):
+                continue
+            if int(chat.id) in seen_peer_ids:
+                continue
+            seen_peer_ids.add(int(chat.id))
+
+            relevant, relevance_reason = self._is_taxi_relevant(chat, self.geo)
+            if not relevant:
+                rejected_relevance += 1
+                continue
+            size_ok, _ = self._is_size_appropriate(chat)
+            if not size_ok:
+                rejected_size += 1
+                continue
+
+            username = chat.username if chat.username else None
+            await self.repository.upsert_discovered_group(
+                peer_id=int(chat.id),
+                title=chat.title or "",
+                username=username,
+                source_query=f"msg:{query}",
+                joined=not chat.left,
+            )
+            discovered += 1
+        logger.info(
+            "group_discovery_query_msg_done",
+            extra={
+                "action": "discovery_query_msg",
+                "reason": query,
+                "count": discovered,
+                "rejected_relevance": rejected_relevance,
+                "rejected_size": rejected_size,
+            },
+        )
+        return discovered
 
     async def _join_pending(self, join_batch: int | None = None) -> None:
         limit = join_batch if join_batch is not None else self.join_batch
@@ -222,6 +357,32 @@ class GroupDiscoveryManager:
         except Exception:
             logger.debug("group_discovery_auth_check_failed")
             return False
+
+    @staticmethod
+    def _expand_with_route_queries(queries: tuple[str, ...]) -> tuple[str, ...]:
+        """Combine user-provided queries with auto-generated route-pair variants.
+
+        For each (a, b) in `_PRIORITY_ROUTE_CORRIDORS`, generate both directions
+        and apply each query template, e.g. `samarqand toshkent`, `samarqand
+        toshkent taksi`, `samarqanddan toshkentga`, `toshkent samarqand`, etc.
+        Duplicates are removed; the user's explicit queries always lead.
+        """
+        seen: set[str] = set()
+        expanded: list[str] = []
+        for query in queries:
+            normalized = query.strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                expanded.append(query)
+        for a, b in _PRIORITY_ROUTE_CORRIDORS:
+            for x, y in ((a, b), (b, a)):
+                for template in _ROUTE_QUERY_TEMPLATES:
+                    candidate = template.format(a=x, b=y).strip()
+                    key = candidate.lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        expanded.append(candidate)
+        return tuple(expanded)
 
     @staticmethod
     def _prioritize_queries(queries: tuple[str, ...]) -> tuple[str, ...]:

@@ -95,3 +95,38 @@ def test_is_size_appropriate_accepts_within_window() -> None:
     ok, reason = GroupDiscoveryManager._is_size_appropriate(chat)
     assert ok
     assert reason.startswith("size_ok:")
+
+
+def test_expand_with_route_queries_preserves_user_queries_first() -> None:
+    user_queries = ("taksi xizmati", "haydovchi taksi")
+    expanded = GroupDiscoveryManager._expand_with_route_queries(user_queries)
+    assert expanded[0] == "taksi xizmati"
+    assert expanded[1] == "haydovchi taksi"
+    # New queries appended afterwards.
+    assert len(expanded) > len(user_queries)
+
+
+def test_expand_with_route_queries_generates_samarqand_toshkent_both_ways() -> None:
+    expanded = GroupDiscoveryManager._expand_with_route_queries(())
+    lowered = {q.lower() for q in expanded}
+    assert "samarqand toshkent taksi" in lowered
+    assert "toshkent samarqand taksi" in lowered
+    assert "samarqanddan toshkentga" in lowered
+    assert "toshkentdan samarqandga" in lowered
+
+
+def test_expand_with_route_queries_generates_samarqand_vodiy_both_ways() -> None:
+    expanded = GroupDiscoveryManager._expand_with_route_queries(())
+    lowered = {q.lower() for q in expanded}
+    assert "samarqand vodiy taksi" in lowered
+    assert "vodiy samarqand taksi" in lowered
+    assert "samarqanddan vodiyga" in lowered
+    assert "vodiydan samarqandga" in lowered
+
+
+def test_expand_with_route_queries_drops_duplicates() -> None:
+    # If the user already supplied a route query, it should not be duplicated.
+    user_queries = ("samarqand toshkent taksi",)
+    expanded = GroupDiscoveryManager._expand_with_route_queries(user_queries)
+    matching = [q for q in expanded if q.lower() == "samarqand toshkent taksi"]
+    assert len(matching) == 1
