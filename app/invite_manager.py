@@ -51,9 +51,26 @@ class InviteLinkManager:
         if not await self._is_authorized():
             return False
         try:
+            remaining = float(getattr(self.executor, "import_invite_floodwait_remaining", 0) or 0)
+            if remaining > 0:
+                logger.info(
+                    "invite_iteration_skipped",
+                    extra={
+                        "action": "invite_scan",
+                        "reason": f"import_invite_floodwait_remaining={int(remaining)}s",
+                    },
+                )
+                return True
             links = await self.repository.fetch_active_invite_links()
             logger.info("invite_iteration", extra={"action": "invite_scan", "count": len(links)})
             for link in links:
+                if float(getattr(self.executor, "import_invite_floodwait_remaining", 0) or 0) > 0:
+                    # Got floodwait mid-iteration — stop hammering, resume next tick.
+                    logger.info(
+                        "invite_iteration_aborted",
+                        extra={"action": "invite_scan", "reason": "floodwait_during_iteration"},
+                    )
+                    break
                 joined = await self.executor.try_join(link)
                 if joined:
                     logger.info("joined_private_group", extra={"action": "join", "reason": link[:120]})

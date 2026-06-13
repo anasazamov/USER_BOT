@@ -5,9 +5,10 @@ import html
 import logging
 import random
 import re
+import time
 from typing import Protocol
 
-from telethon import TelegramClient, functions, utils
+from telethon import TelegramClient, errors, functions, utils
 
 from app.config import Settings
 from app.models import Decision, NormalizedMessage
@@ -73,6 +74,13 @@ class ActionExecutor:
         self.bot_publisher = bot_publisher
         self._published_order_map: dict[tuple[int, int], tuple[str | int, int]] = {}
         self._private_invite_route_map: dict[str, int] = {}
+        # Per-API floodwait tracking. Telegram returns FloodWaitError with a wait
+        # window when a request type is rate-limited; we record the expiry on the
+        # monotonic clock and skip further requests of the same type until it
+        # passes. Each RPC has its own budget on Telegram's side, so we track
+        # them separately rather than sharing a single deadline.
+        self._import_invite_floodwait_until: float = 0.0
+        self._join_channel_floodwait_until: float = 0.0
 
     async def execute(self, msg: NormalizedMessage, decision: Decision) -> None:
         if not decision.should_forward:
@@ -280,7 +288,25 @@ class ActionExecutor:
                     },
                 )
 
+    @property
+    def import_invite_floodwait_remaining(self) -> float:
+        return max(0.0, self._import_invite_floodwait_until - time.monotonic())
+
+    @property
+    def join_channel_floodwait_remaining(self) -> float:
+        return max(0.0, self._join_channel_floodwait_until - time.monotonic())
+
     async def try_join(self, invite_link: str) -> bool:
+        remaining = self.import_invite_floodwait_remaining
+        if remaining > 0:
+            logger.info(
+                "join_skipped_floodwait",
+                extra={
+                    "action": "join_skip",
+                    "reason": f"import_invite_floodwait_remaining={int(remaining)}s",
+                },
+            )
+            return False
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
         join_limit_day = runtime.join_limit_day if runtime else self.settings.join_limit_day
         if not await self.cooldown.allow_join(join_limit_day):
@@ -309,6 +335,19 @@ class ActionExecutor:
             logger.info("join_ok", extra={"action": "join", "status": "ok"})
             await self.repository.insert_action(0, 0, "join", "ok")
             return True
+        except errors.FloodWaitError as exc:
+            seconds = int(getattr(exc, "seconds", 60) or 60) + 5
+            self._import_invite_floodwait_until = time.monotonic() + seconds
+            logger.warning(
+                "join_floodwait",
+                extra={
+                    "action": "join",
+                    "reason": f"import_invite_floodwait={seconds}s",
+                    "status": "floodwait",
+                },
+            )
+            await self.repository.insert_action(0, 0, "join", "floodwait")
+            return False
         except Exception:
             logger.exception("join_failed")
             await self.repository.insert_action(0, 0, "join", "error")
@@ -316,6 +355,17 @@ class ActionExecutor:
 
     async def try_join_public(self, username: str, peer_id: int) -> bool:
         if not username:
+            return False
+        remaining = self.join_channel_floodwait_remaining
+        if remaining > 0:
+            logger.info(
+                "join_public_skipped_floodwait",
+                extra={
+                    "action": "join_public_skip",
+                    "chat_id": peer_id,
+                    "reason": f"join_channel_floodwait_remaining={int(remaining)}s",
+                },
+            )
             return False
         runtime = self.runtime_config.snapshot() if self.runtime_config else None
         join_limit_day = runtime.join_limit_day if runtime else self.settings.join_limit_day
@@ -332,6 +382,20 @@ class ActionExecutor:
             logger.info("join_public_ok", extra={"action": "join_public", "chat_id": peer_id, "status": "ok"})
             await self.repository.insert_action(peer_id, 0, "join_public", "ok")
             return True
+        except errors.FloodWaitError as exc:
+            seconds = int(getattr(exc, "seconds", 60) or 60) + 5
+            self._join_channel_floodwait_until = time.monotonic() + seconds
+            logger.warning(
+                "join_public_floodwait",
+                extra={
+                    "action": "join_public",
+                    "chat_id": peer_id,
+                    "reason": f"join_channel_floodwait={seconds}s",
+                    "status": "floodwait",
+                },
+            )
+            await self.repository.insert_action(peer_id, 0, "join_public", "floodwait")
+            return False
         except Exception:
             logger.exception("join_public_failed", extra={"chat_id": peer_id})
             await self.repository.insert_action(peer_id, 0, "join_public", "error")

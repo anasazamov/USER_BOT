@@ -1117,10 +1117,10 @@ class AdminWebServer:
       return text === '' ? fallback : text;
     }}
     function parseDiscoveryQueriesInput(raw) {{
-      const text = String(nvl(raw, '')).replace(/\r/g, '');
+      const text = String(nvl(raw, '')).replace(/\\r/g, '');
       const out = [];
       const seen = new Set();
-      for (const line of text.split('\n')) {{
+      for (const line of text.split('\\n')) {{
         for (const part of line.split(',')) {{
           const v = part.trim().replace(/\\s+/g, ' ');
           if (!v) continue;
