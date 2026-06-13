@@ -54,6 +54,8 @@ class AdminWebServer:
                 web.get("/api/classifier", self._api_classifier_status),
                 web.get("/api/discovery/groups", self._api_discovery_groups),
                 web.post("/api/discovery/groups/toggle", self._api_discovery_toggle),
+                web.post("/api/discovery/groups/join", self._api_discovery_join),
+                web.post("/api/discovery/groups/join_batch", self._api_discovery_join_batch),
                 web.post("/api/discovery/run", self._api_discovery_run),
             ]
         )
@@ -285,6 +287,84 @@ class AdminWebServer:
         if not ok:
             return web.json_response({"error": "not_found"}, status=404)
         return web.json_response({"status": "ok", "username": username, "active": active})
+
+    async def _api_discovery_join(self, request: web.Request) -> web.Response:
+        executor = getattr(self.discovery_manager, "executor", None) if self.discovery_manager else None
+        if executor is None:
+            return web.json_response({"error": "discovery_manager_unavailable"}, status=503)
+        payload = await self._read_payload(request)
+        username = str(payload.get("username", "")).strip().lstrip("@").lower()
+        try:
+            peer_id = int(payload.get("peer_id") or 0)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_peer_id"}, status=400)
+        if not username or peer_id == 0:
+            return web.json_response({"error": "username_and_peer_id_required"}, status=400)
+        try:
+            joined = await executor.try_join_public(username, peer_id)
+        except Exception as exc:
+            logger.exception("admin_discovery_join_failed")
+            return web.json_response({"error": f"join_failed:{exc!r}"}, status=500)
+        if joined:
+            try:
+                await self.repository.mark_group_joined(peer_id)
+            except Exception:
+                logger.exception("admin_discovery_mark_joined_failed")
+            return web.json_response({"status": "ok", "joined": True, "username": username})
+        # Surface FloodWait state so the operator knows why it didn't take.
+        remaining = float(getattr(executor, "join_channel_floodwait_remaining", 0) or 0)
+        return web.json_response(
+            {
+                "status": "failed",
+                "joined": False,
+                "username": username,
+                "floodwait_remaining_sec": int(remaining) if remaining > 0 else 0,
+            }
+        )
+
+    async def _api_discovery_join_batch(self, request: web.Request) -> web.Response:
+        executor = getattr(self.discovery_manager, "executor", None) if self.discovery_manager else None
+        if executor is None:
+            return web.json_response({"error": "discovery_manager_unavailable"}, status=503)
+        payload = await self._read_payload(request)
+        try:
+            limit = max(1, min(int(payload.get("limit") or 10), 50))
+        except (TypeError, ValueError):
+            limit = 10
+        pending = await self.repository.fetch_unjoined_public_groups(limit=limit)
+        joined_count = 0
+        failed_count = 0
+        for group in pending:
+            try:
+                ok = await executor.try_join_public(group.username, group.peer_id)
+            except Exception:
+                logger.exception("admin_discovery_join_batch_item_failed")
+                ok = False
+            if ok:
+                try:
+                    await self.repository.mark_group_joined(group.peer_id)
+                except Exception:
+                    logger.exception("admin_discovery_mark_joined_failed")
+                joined_count += 1
+            else:
+                try:
+                    await self.repository.mark_group_error(group.peer_id, "join_failed")
+                except Exception:
+                    logger.exception("admin_discovery_mark_error_failed")
+                failed_count += 1
+            # If we hit FloodWait mid-batch, stop immediately rather than burning more attempts.
+            if float(getattr(executor, "join_channel_floodwait_remaining", 0) or 0) > 0:
+                break
+        remaining = float(getattr(executor, "join_channel_floodwait_remaining", 0) or 0)
+        return web.json_response(
+            {
+                "status": "ok",
+                "attempted": joined_count + failed_count,
+                "joined": joined_count,
+                "failed": failed_count,
+                "floodwait_remaining_sec": int(remaining) if remaining > 0 else 0,
+            }
+        )
 
     async def _api_discovery_run(self, _: web.Request) -> web.Response:
         if self.discovery_manager is None:
@@ -967,6 +1047,8 @@ class AdminWebServer:
                 <button class="btn-mini" onclick="loadDiscoveredGroups('joined')">Joined</button>
                 <button class="btn-mini" onclick="loadDiscoveredGroups('pending')">Pending</button>
                 <button class="btn-mini" onclick="loadDiscoveredGroups('inactive')">Inactive</button>
+                <button class="btn-mini btn-primary" onclick="discoveryJoinBatch(10)" title="10 ta navbatdagi guruhga kirish">Join Next 10</button>
+                <button class="btn-mini btn-primary" onclick="discoveryJoinBatch(30)" title="30 ta navbatdagi guruhga kirish">Join Next 30</button>
               </div>
               <div id="discovery_summary" class="muted" style="margin-top:8px;"></div>
               <div id="discovery_list" style="margin-top:10px;"></div>
@@ -1313,6 +1395,9 @@ class AdminWebServer:
         list.innerHTML = data.groups.map(g => {{
           const label = g.username ? '@' + g.username : (g.title || g.peer_id);
           const joined = g.joined ? '✓' : '·';
+          const joinBtn = (!g.joined && g.username && g.active) ? (
+            '<button class="btn-mini btn-primary" onclick="discoveryJoin(\\'' + g.username + '\\',' + g.peer_id + ')">Join</button>'
+          ) : '';
           const activeBtn = g.username ? (
             '<button class="btn-mini" onclick="discoveryToggle(\\'' + g.username + '\\',' + (g.active ? 'false' : 'true') + ')">' +
             (g.active ? 'Deactivate' : 'Activate') + '</button>'
@@ -1321,7 +1406,7 @@ class AdminWebServer:
             '<div class="row" style="padding:6px 0; border-bottom:1px solid var(--line); gap:8px;">' +
               '<span style="min-width:18px;">' + joined + '</span>' +
               '<span style="flex:1; word-break:break-all;">' + escapeHtml(g.title || '(no title)') + '<br><small class="muted">' + escapeHtml(label) + ' · ' + escapeHtml(g.source_query || '') + '</small></span>' +
-              activeBtn +
+              joinBtn + activeBtn +
             '</div>'
           );
         }}).join('');
@@ -1335,6 +1420,41 @@ class AdminWebServer:
         setStatus('Discovery ishga tushyapti...');
         await req('/api/discovery/run', {{}});
         setStatus('Discovery iteration bajarildi');
+        await loadDiscoveredGroups();
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    async function discoveryJoin(username, peerId) {{
+      setBusy(true);
+      try {{
+        const res = await req('/api/discovery/groups/join', {{username, peer_id: peerId}});
+        if (res.joined) {{
+          setStatus('@' + username + ' join qilindi');
+        }} else if (res.floodwait_remaining_sec > 0) {{
+          setStatus('FloodWait — yana ' + res.floodwait_remaining_sec + 's kutish kerak', true);
+        }} else {{
+          setStatus('@' + username + ' join bo\\'lmadi', true);
+        }}
+        await loadDiscoveredGroups();
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    async function discoveryJoinBatch(limit) {{
+      setBusy(true);
+      try {{
+        setStatus('Navbatdagi ' + limit + ' guruhga kirilmoqda...');
+        const res = await req('/api/discovery/groups/join_batch', {{limit}});
+        let msg = 'Join: ' + res.joined + ' / ' + res.attempted + ' (failed: ' + res.failed + ')';
+        if (res.floodwait_remaining_sec > 0) {{
+          msg += ' — FloodWait ' + res.floodwait_remaining_sec + 's';
+        }}
+        setStatus(msg, res.failed > res.joined);
         await loadDiscoveredGroups();
       }} catch (e) {{
         setStatus(String(e), true);
