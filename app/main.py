@@ -11,6 +11,7 @@ from app.admin_web import AdminWebServer
 from app.classifier import TaxiOrderClassifier
 from app.config import Settings
 from app.env import load_env_file
+from app.sessions import create_secondary_client
 from app.group_discovery import GroupDiscoveryManager
 from app.invite_manager import InviteLinkManager
 from app.keywords import KeywordService
@@ -172,6 +173,7 @@ async def main() -> None:
         classifier=classifier,
     )
     userbot_tasks: list[asyncio.Task[None]] = []
+    secondary_clients: list[TelegramClient] = []
 
     try:
         if web_server:
@@ -180,6 +182,40 @@ async def main() -> None:
             await management_bot.start()
         userbot_tasks.append(_spawn_userbot_task("userbot-primary", userbot))
         await asyncio.sleep(2.0)
+
+        # Spin up secondary Telethon connections so heavy RPCs don't compete
+        # with the main client's update stream. Each one shares the main
+        # session's auth_key (via SQLite backup); Telegram treats them as
+        # additional connections on the same account. We attach them onto the
+        # executor / discovery manager after they're verified authorized; if
+        # creation fails (e.g. session not yet present), we fall back to the
+        # single-client behaviour silently.
+        try:
+            join_client = await create_secondary_client(
+                settings.session_name, settings.api_id, settings.api_hash, "join"
+            )
+            secondary_clients.append(join_client)
+            executor.join_client = join_client
+            logger.info(
+                "join_client_attached",
+                extra={"action": "session_attach", "reason": "join"},
+            )
+        except Exception:
+            logger.exception("join_client_init_failed")
+        if discovery_manager:
+            try:
+                discovery_client = await create_secondary_client(
+                    settings.session_name, settings.api_id, settings.api_hash, "disc"
+                )
+                secondary_clients.append(discovery_client)
+                discovery_manager.client = discovery_client
+                logger.info(
+                    "discovery_client_attached",
+                    extra={"action": "session_attach", "reason": "disc"},
+                )
+            except Exception:
+                logger.exception("discovery_client_init_failed")
+
         with suppress(Exception):
             await invite_manager.run_once()
         if discovery_manager:
@@ -190,6 +226,9 @@ async def main() -> None:
             await discovery_manager.start()
         await _wait_until_any_userbot_stops(userbot_tasks)
     finally:
+        for sc in secondary_clients:
+            with suppress(Exception):
+                await sc.disconnect()
         if web_server:
             with suppress(Exception):
                 await web_server.stop()
