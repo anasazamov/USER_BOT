@@ -83,8 +83,38 @@ _DRIVER_PATTERNS = [
     r"\bsrochn[oa]\s+\w+\s+(?:yuramiz|ketamiz|olamiz)\b",
     # Quantity + driver verb ("2 kishi olamiz", "3 ta odam ketamiz")
     r"\b\d+\s*(?:ta\s+)?(?:odam|kishi|passajir|yo[\W_]?lovchi|joy)\s+(?:olamiz|olaman)\b",
+    # Driver announcing an existing gendered passenger ("ayol kishi bor",
+    # "erkak yo'lovchi bor", "qiz bor") — drivers advertise the seat
+    # composition of who's already in the car to attract co-riders.
+    r"\b(?:ayol|erkak|qiz|ayollar|erkaklar|opa|aka|xola|akamiz|opamiz)\b[^.\n]{0,40}\b(?:kishi|yo[\W_]?lovchi|passajir)\s+bor\b",
+    r"\b(?:ayol|erkak|qiz|ayollar|erkaklar)\s+yo[\W_]?lovchi(?:miz)?\s+bor\b",
+    r"\b(?:ayol|erkak)\s+kishi(?:miz)?\s+bor\b",
+    # Driver scheduling: pre-dawn or early morning time announcement with route.
+    # "saxar 3:00-4:00", "ertalab 5 da", "sahar 03 00 larda" — customers rarely
+    # write departure-time-ranges; drivers list their planned departure window.
+    r"\b(?:saxar|sahar|saxarda|saharda|saharlab|tongda|tongotar)\b\s*\d",
+    r"\bertalab\s+\d+\s*(?:da|:\d{2})",
+    r"\b\d+\s*[:.]?\s*\d{0,2}\s*[\-–]\s*\d+\s*[:.]?\s*\d{0,2}\s+larda\b",  # 3:00-4:00 larda
+    # Multi-city route sequence (≥3 places) — driver listing pickup stops.
+    # We approximate by counting comma-or-space separated capitalised place
+    # names; this is run against the normalized text inside annotate() with a
+    # secondary heuristic, not as a raw regex.
+    # Driver service-offer keywords:
+    r"\bxizmat(?:imiz|imizda)?\b", r"\btaksi\s+xizmat", r"\btaxi\s+xizmat",
+    r"\bzakaz\s+(?:qabul\s+qilamiz|olamiz)", r"\bzakazga\s+yuramiz\b",
+    r"\bbron\s+qiling\b", r"\border\s+qiling\b",
+    r"\bklient\s+vat", r"\bmijoz\s+vat",  # "klient vaqtiga yuramiz"
 ]
 _DRIVER_RE = re.compile("|".join(_DRIVER_PATTERNS), re.IGNORECASE)
+
+# Driver-specific "X kishi kerak" pattern — when a passenger count is "needed"
+# *after* a route originating with "<city>dan", that's a driver announcing
+# available seats, not a customer. Customers more often write "taxi kerak" or
+# "X kishi-miz" (we are X people) without "kerak".
+_DRIVER_SEATS_NEEDED_RE = re.compile(
+    r"\b\w{3,}(?:dan|den)\b[\s\S]{0,80}\b\d+\s*(?:ta\s+)?(?:kishi|odam|yo[\W_]?lovchi|joy)\s+kerak\b",
+    re.IGNORECASE,
+)
 
 
 # Customer-side order indicators. A real order must match at least one of
@@ -113,12 +143,24 @@ _ORDER_PEOPLE_RE = re.compile(
 )
 
 # Route pattern — needed to confirm an "order" has direction; otherwise a
-# bare "1 kishi bor" could be a chat message about a group of people.
+# bare "1 kishi bor" could be a chat message about a group of people. We
+# accept "<city>dan <city>ga|gacha", "<city>ga <city>dan" (reversed), and
+# common destination-only forms like "shaharga", "biznasiga", "vokzalga".
 _ROUTE_RE = re.compile(
-    r"\b[a-z0-9]{3,}(?:dan|den)\b.*\b[a-z0-9]{2,}(?:ga|ge|gacha)\b"
+    r"\b[a-z0-9]{3,}(?:dan|den)\b.*?\b[a-z0-9]{2,}(?:ga|ge|gacha)\b"
+    r"|\b[a-z0-9]{3,}(?:ga|gacha)\b.*?\b[a-z0-9]{2,}(?:dan|den)\b"
     r"|\b[a-z0-9]{3,}\s+(?:dan|den)\s+[a-z0-9]{2,}\s+(?:ga|ge|gacha)\b"
-    r"|\bshaharga\b"
-    r"|\bshahardan\b",
+    r"|\b(?:shaharga|shahardan|jartepaga|jartepadan|vokzalga|vokzaldan|"
+    r"banisasiga|biznasiga|raykonga|markazga|aeroportga|aerportdan|"
+    r"bekatga|bekatdan|temir\s+yol|temiryol|stansiya|avtovokzal|"
+    r"stantsiyaga|metro|bozorga|maydonga|institutga|universitetga)\b",
+    re.IGNORECASE,
+)
+
+# A weaker "looks like a destination" hint used to upgrade ambiguous
+# "X kishi bor" messages to orders when there's no explicit dan/ga pattern.
+_DESTINATION_HINT_RE = re.compile(
+    r"\b[a-z0-9]{4,}(?:ga|gacha|gech|kech)\b",
     re.IGNORECASE,
 )
 
@@ -157,6 +199,23 @@ def strip_forward_wrapper(text: str) -> str:
     return body.strip() or text.strip()
 
 
+def _despace_singletons(text: str) -> str:
+    """Collapse adversarial single-letter spacing like 'u r g u t d a n' →
+    'urgutdan'. Some drivers space-out words to bypass keyword filters; we
+    run the driver regex on both the original and the despaced form so
+    these tricks don't slip through.
+
+    The heuristic only merges chains of 3+ tokens of length ≤ 2 — that's
+    rare in natural Uzbek and a strong signal of intentional spacing.
+    """
+    def _merge(match: re.Match[str]) -> str:
+        chunk = match.group(0)
+        return chunk.replace(" ", "")
+
+    # Three or more short tokens in a row → likely spaced-out word.
+    return re.sub(r"(?:\b\w{1,2}\b\s+){2,}\b\w{1,2}\b", _merge, text)
+
+
 def annotate(raw_text: str, normalized: str) -> str:
     """Return one of: 'order', 'driver', 'ad', 'noise'."""
     if not normalized or len(normalized) < 10:
@@ -167,28 +226,41 @@ def annotate(raw_text: str, normalized: str) -> str:
     if _AD_RE.search(raw_text) or _AD_RE.search(normalized):
         return "ad"
 
-    # 2. Driver signal: presence of any driver verb / vehicle / parcel phrase.
-    driver_match = bool(_DRIVER_RE.search(normalized))
+    # 2. Driver signal: presence of any driver verb / vehicle / parcel phrase,
+    #    OR "[city]dan ... X kishi kerak" which is a driver-side seat-offer.
+    #    Also check the despaced form to catch "p o ch t a o l a m a n".
+    despaced = _despace_singletons(normalized)
+    driver_match = (
+        bool(_DRIVER_RE.search(normalized))
+        or bool(_DRIVER_SEATS_NEEDED_RE.search(normalized))
+        or bool(_DRIVER_RE.search(despaced))
+        or bool(_DRIVER_SEATS_NEEDED_RE.search(despaced))
+    )
 
-    # 3. Order signal: explicit request phrase OR "X kishi bor" + route + phone,
-    #    without driver signal anywhere in the message.
+    # 3. Order signal: explicit request phrase OR "X kishi bor" + (route or
+    #    phone or destination hint) — without driver signal anywhere.
     strong_order = bool(_ORDER_STRONG_RE.search(normalized))
     weak_people_order = bool(_ORDER_PEOPLE_RE.search(normalized))
-    has_route = bool(_ROUTE_RE.search(normalized))
+    has_route = bool(_ROUTE_RE.search(normalized)) or bool(
+        _ROUTE_RE.search(despaced)
+    )
+    has_destination_hint = bool(_DESTINATION_HINT_RE.search(normalized))
     has_phone = bool(_PHONE_RE.search(raw_text or normalized))
 
     if driver_match:
         return "driver"
     if strong_order:
         return "order"
-    if weak_people_order and has_route:
-        # "Toshkentdan Samarqandga 1 kishi bor +998..." with no driver verb
+    if weak_people_order and (has_route or has_phone or has_destination_hint):
+        # "Toshkentdan Samarqandga 1 kishi bor +998..." OR
+        # "temir yol banisasiga 1 kishi bor" (no driver verb) OR
+        # "kop tarmoqlidan jartepagacha 2 kishi bor 9319..."
         return "order"
 
     # 4. Greetings / short noise.
     if _GREETING_RE.search(normalized):
         return "noise"
-    if not has_phone and not has_route:
+    if not has_phone and not has_route and not has_destination_hint:
         return "noise"
 
     # 5. Catch-all: message has route/phone but no order or driver verb —
