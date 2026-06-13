@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from contextlib import suppress
 
-from telethon import TelegramClient, functions, types
+from telethon import TelegramClient, errors, functions, types
 
 from app.actions import ActionExecutor
 from app.geo import GeoResolver
@@ -110,6 +111,13 @@ class GroupDiscoveryManager:
         self.geo = GeoResolver()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        # Per-RPC FloodWait deadlines. Telegram rate-limits SearchRequest and
+        # SearchGlobalRequest independently; once a long wait (hours) is
+        # returned, hammering the same endpoint just wastes outbound calls and
+        # keeps the log noisy. Each deadline is reset when an attempt succeeds
+        # past it, set when a FloodWaitError is raised.
+        self._contacts_search_floodwait_until: float = 0.0
+        self._messages_search_floodwait_until: float = 0.0
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="group-discovery-manager")
@@ -191,8 +199,23 @@ class GroupDiscoveryManager:
 
     async def _discover_query(self, query: str, query_limit: int | None = None) -> int:
         limit = query_limit if query_limit is not None else self.query_limit
+        now = time.monotonic()
+        if now < self._contacts_search_floodwait_until:
+            return 0
         try:
             result = await self.client(functions.contacts.SearchRequest(q=query, limit=limit))
+        except errors.FloodWaitError as exc:
+            seconds = int(getattr(exc, "seconds", 60) or 60) + 5
+            self._contacts_search_floodwait_until = time.monotonic() + seconds
+            logger.warning(
+                "discovery_query_floodwait",
+                extra={
+                    "action": "discovery_query",
+                    "reason": f"contacts_search_floodwait={seconds}s",
+                    "source_query": query,
+                },
+            )
+            return 0
         except Exception as exc:
             logger.warning(
                 "discovery_query_failed",
@@ -272,6 +295,9 @@ class GroupDiscoveryManager:
         back. We then run the same relevance filter on the source chat.
         """
         limit = max(min(query_limit or self.query_limit, 100), 1)
+        now = time.monotonic()
+        if now < self._messages_search_floodwait_until:
+            return 0
         try:
             result = await self.client(
                 functions.messages.SearchGlobalRequest(
@@ -285,6 +311,18 @@ class GroupDiscoveryManager:
                     limit=limit,
                 )
             )
+        except errors.FloodWaitError as exc:
+            seconds = int(getattr(exc, "seconds", 60) or 60) + 5
+            self._messages_search_floodwait_until = time.monotonic() + seconds
+            logger.warning(
+                "discovery_query_floodwait",
+                extra={
+                    "action": "discovery_query_msg",
+                    "reason": f"messages_search_floodwait={seconds}s",
+                    "source_query": query,
+                },
+            )
+            return 0
         except Exception as exc:
             logger.warning(
                 "discovery_query_failed",
