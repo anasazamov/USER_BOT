@@ -77,7 +77,10 @@ class DecisionEngine:
         self.offer_context_pattern = re.compile(
             r"\b(?:ketyapman|ketyapmiz|yuryapman|yuryapmiz|olib\s+ketaman|olibketaman|"
             r"olib\s+ketamiz|olibketamiz|zakazga(?:\s+ham)?\s+yuraman|manzildan\s+manzilgach|"
-            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|yuramiz|yuryamiz|ketaman|boraman|chiqaman|chiqamiz|komfort)\b"
+            r"joy\s+bor|bagaj|shafer|shafermiz|haydovchimiz|yuraman|yuramiz|yuryamiz|"
+            r"ketaman|ketamiz|olaman|olamiz|olib\s+yuraman|olib\s+yuramiz|"
+            r"poshtayam|poshtaham|pochtayam|pochtaham|pochta\s+olamiz|poshta\s+olamiz|"
+            r"boraman|chiqaman|chiqamiz|komfort)\b"
         )
         self.vehicle_model_pattern = re.compile(
             r"\b(?:kobalt|cobalt|nexia|jentra|malibu|lacetti|damas|spark|captiva|onix|tracker|matiz|epica)\b"
