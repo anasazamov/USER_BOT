@@ -1098,7 +1098,11 @@ class AdminWebServer:
     }});
     async function req(url, body=null) {{
       const init = body ? {{method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify(body)}} : {{}};
-      const res = await fetch(url + tokenQs, init);
+      let finalUrl = url;
+      if (tokenQs) {{
+        finalUrl = url + (url.indexOf('?') >= 0 ? '&' + tokenQs.substring(1) : tokenQs);
+      }}
+      const res = await fetch(finalUrl, init);
       const data = await res.json();
       if (!res.ok) {{
         const errMsg = (data && typeof data === 'object' && data.error)
@@ -1251,15 +1255,20 @@ class AdminWebServer:
     async function refreshAll() {{
       setBusy(true);
       try {{
-        await Promise.all([
+        const results = await Promise.allSettled([
           loadKeywords(false),
           loadGroups(false),
           loadConfig(false),
           loadClassifierStatus(false),
           loadDiscoveredGroups('pending'),
         ]);
+        const failures = results.filter(r => r.status === 'rejected');
         updateSummary();
-        setStatus('Barcha bo\\'limlar yangilandi');
+        if (failures.length === 0) {{
+          setStatus('Barcha bo\\'limlar yangilandi');
+        }} else {{
+          setStatus(failures.length + ' ta bo\\'lim yuklanmadi: ' + String(failures[0].reason), true);
+        }}
       }} catch (e) {{
         setStatus(String(e), true);
       }} finally {{
