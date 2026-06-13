@@ -447,12 +447,13 @@ class ActionRepository:
                          THEN 1 ELSE 0 END), 0) AS recent_attempts,
             MAX(CASE WHEN al.action_type IN ('publish','publish_edit')
                      AND al.status = 'ok'
-                THEN al.created_at END) AS last_publish_at
+                THEN al.created_at END) AS last_publish_at,
+            MAX(dg.updated_at) AS group_updated_at
         FROM discovered_groups dg
         LEFT JOIN action_log al ON al.chat_id = dg.peer_id
         WHERE dg.joined = TRUE AND dg.active = TRUE
         GROUP BY dg.peer_id, dg.title, dg.username, dg.source_query
-        ORDER BY recent_publishes DESC, dg.updated_at DESC
+        ORDER BY recent_publishes DESC, group_updated_at DESC
         LIMIT $2
         """
         async with self.db.pool.acquire() as conn:
