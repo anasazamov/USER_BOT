@@ -65,7 +65,6 @@ class ActionExecutor:
         repository: ActionRepository,
         runtime_config: RuntimeConfigService | None = None,
         bot_publisher: BotPublisher | None = None,
-        join_client: TelegramClient | None = None,
     ) -> None:
         self.client = client
         self.settings = settings
@@ -73,11 +72,6 @@ class ActionExecutor:
         self.repository = repository
         self.runtime_config = runtime_config
         self.bot_publisher = bot_publisher
-        # When provided, join RPCs (ImportChatInviteRequest, JoinChannelRequest)
-        # go through this separate-account client so they don't touch the main
-        # account's update-stream slot or rate-limit budget. Falls back to the
-        # main client when no secondary is configured.
-        self.join_client = join_client or client
         self._published_order_map: dict[tuple[int, int], tuple[str | int, int]] = {}
         self._private_invite_route_map: dict[str, int] = {}
         # Per-API floodwait tracking. Telegram returns FloodWaitError with a wait
@@ -322,7 +316,7 @@ class ActionExecutor:
             await self._human_pause()
             invite_hash = invite_link.rsplit("/", 1)[-1].lstrip("+")
             logger.info("join_attempt", extra={"action": "join_attempt", "reason": invite_link[:120]})
-            updates = await self.join_client(functions.messages.ImportChatInviteRequest(invite_hash))
+            updates = await self.client(functions.messages.ImportChatInviteRequest(invite_hash))
             joined_chat_id = self._extract_joined_chat_id(updates)
             if joined_chat_id is not None:
                 self._remember_private_invite_source(invite_link, joined_chat_id)
@@ -384,7 +378,7 @@ class ActionExecutor:
                 "join_public_attempt",
                 extra={"action": "join_public_attempt", "chat_id": peer_id, "reason": username},
             )
-            await self.join_client(functions.channels.JoinChannelRequest(channel=username))
+            await self.client(functions.channels.JoinChannelRequest(channel=username))
             logger.info("join_public_ok", extra={"action": "join_public", "chat_id": peer_id, "status": "ok"})
             await self.repository.insert_action(peer_id, 0, "join_public", "ok")
             return True
