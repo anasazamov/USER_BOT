@@ -122,7 +122,26 @@ async def main() -> None:
     cooldown = CooldownManager(limiter_backend)
     queue = MessageQueue(settings.queue_max_size)
 
-    client = TelegramClient(settings.session_name, settings.api_id, settings.api_hash)
+    # Tuning notes for the single-connection setup:
+    #   - connection_retries=20, retry_delay=2: aggressively reconnect when the
+    #     update stream drops so "Got difference" recovery is fast.
+    #   - request_retries=5: retry transient API failures without crashing the
+    #     iteration that triggered them.
+    #   - flood_sleep_threshold=60: short FloodWait responses (≤60s) are
+    #     handled in-process by Telethon; longer ones still propagate so our
+    #     per-RPC tracker can shelve the endpoint.
+    #   - receive_updates=True (default): we depend on the realtime push so
+    #     incoming taxi orders get classified immediately.
+    client = TelegramClient(
+        settings.session_name,
+        settings.api_id,
+        settings.api_hash,
+        connection_retries=20,
+        retry_delay=2,
+        request_retries=5,
+        auto_reconnect=True,
+        flood_sleep_threshold=60,
+    )
     management_bot: TelegramManagementBot | None = None
     if settings.bot_token:
         management_bot = TelegramManagementBot(settings=settings, repository=repository)
