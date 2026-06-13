@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import suppress
 
 from telethon import TelegramClient, functions, types
 
 from app.actions import ActionExecutor
+from app.geo import GeoResolver
 from app.runtime_config import RuntimeConfigService
 from app.storage.db import ActionRepository, DiscoveredGroup
 
@@ -22,6 +24,40 @@ _QUERY_PRIORITY_TOKENS = (
     "namangan",
     "vodiy",
 )
+
+# Direct taxi-domain keywords. Match anywhere inside title/username (lowercased, with
+# underscores/dashes flattened to spaces). At least one match is required, OR the title
+# must mention 2+ distinct UZ regions (route-pair convention like "urguttoshkint").
+_TAXI_KEYWORDS: tuple[str, ...] = (
+    "taxi", "taksi", "haydovchi", "shofer", "shafer",
+    "transport", "ride", "yandex", "uber",
+    "moshin", "mashin", "avto",
+    "passajir", "yolovchi",
+    "marshrut",
+)
+
+# Hard rejects — if any of these substrings appears in title/username, the group is
+# never enqueued for join, regardless of taxi-keyword presence.
+_TAXI_BLACKLIST_KEYWORDS: tuple[str, ...] = (
+    "yangilik", "news",
+    "kino", "film", "klip",
+    "music", "muzika",
+    "savdo", "sotuv", "sotiladi", "shop", "magazin", "market", "narx",
+    "ovqat", "restoran", "cafe", "kafe", "pizza",
+    "vakansiya", "ish topish",
+    "kripto", "crypto", "bitcoin", "trading", "forex", "investitsiya",
+    "qimor", "casino", "betting",
+    "intim", "erotik", "18plus",
+    "reklama kanal", "obuna ber",
+)
+
+_TITLE_SEPARATOR_RE = re.compile(r"[_\-./]+")
+
+# Member-count window. Lower bound filters dead/test groups; upper bound filters mega
+# dumps that are unlikely to be focused taxi channels. Zero/None means unknown — we
+# stay lenient and accept (search results often omit participants_count).
+_MIN_MEMBERS = 30
+_MAX_MEMBERS = 200_000
 
 
 class GroupDiscoveryManager:
@@ -44,6 +80,7 @@ class GroupDiscoveryManager:
         self.query_limit = query_limit
         self.join_batch = join_batch
         self.runtime_config = runtime_config
+        self.geo = GeoResolver()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
@@ -107,10 +144,44 @@ class GroupDiscoveryManager:
         limit = query_limit if query_limit is not None else self.query_limit
         result = await self.client(functions.contacts.SearchRequest(q=query, limit=limit))
         discovered = 0
+        rejected_relevance = 0
+        rejected_size = 0
         for chat in result.chats:
             if not isinstance(chat, types.Channel):
                 continue
             if not (getattr(chat, "megagroup", False) or getattr(chat, "gigagroup", False)):
+                continue
+
+            relevant, relevance_reason = self._is_taxi_relevant(chat, self.geo)
+            if not relevant:
+                rejected_relevance += 1
+                logger.info(
+                    "discovery_chat_rejected",
+                    extra={
+                        "action": "discovery_reject",
+                        "reason": relevance_reason,
+                        "chat_id": int(chat.id),
+                        "chat_title": chat.title or "",
+                        "chat_username": chat.username or "",
+                        "source_query": query,
+                    },
+                )
+                continue
+
+            size_ok, size_reason = self._is_size_appropriate(chat)
+            if not size_ok:
+                rejected_size += 1
+                logger.info(
+                    "discovery_chat_rejected",
+                    extra={
+                        "action": "discovery_reject",
+                        "reason": size_reason,
+                        "chat_id": int(chat.id),
+                        "chat_title": chat.title or "",
+                        "chat_username": chat.username or "",
+                        "source_query": query,
+                    },
+                )
                 continue
 
             username = chat.username if chat.username else None
@@ -124,7 +195,13 @@ class GroupDiscoveryManager:
             discovered += 1
         logger.info(
             "group_discovery_query_done",
-            extra={"action": "discovery_query", "reason": query, "count": discovered},
+            extra={
+                "action": "discovery_query",
+                "reason": query,
+                "count": discovered,
+                "rejected_relevance": rejected_relevance,
+                "rejected_size": rejected_size,
+            },
         )
 
     async def _join_pending(self, join_batch: int | None = None) -> None:
@@ -157,3 +234,49 @@ class GroupDiscoveryManager:
             ),
         )
         return tuple(prioritized)
+
+    @staticmethod
+    def _normalize_haystack(chat: object) -> str:
+        title = (getattr(chat, "title", None) or "").lower()
+        username = (getattr(chat, "username", None) or "").lower()
+        haystack = f" {title} {username} "
+        return _TITLE_SEPARATOR_RE.sub(" ", haystack)
+
+    @staticmethod
+    def _count_distinct_regions(haystack: str, geo: GeoResolver) -> int:
+        if not haystack:
+            return 0
+        found: set[str] = set()
+        for phrase, region_name in geo._phrase_aliases:
+            if phrase in haystack:
+                found.add(region_name)
+        for token in haystack.split():
+            region_name = geo._single_alias_to_region.get(token)
+            if region_name:
+                found.add(region_name)
+        return len(found)
+
+    @classmethod
+    def _is_taxi_relevant(cls, chat: object, geo: GeoResolver) -> tuple[bool, str]:
+        haystack = cls._normalize_haystack(chat)
+        for kw in _TAXI_BLACKLIST_KEYWORDS:
+            if kw in haystack:
+                return False, f"blacklist:{kw}"
+        for kw in _TAXI_KEYWORDS:
+            if kw in haystack:
+                return True, f"taxi_keyword:{kw}"
+        region_count = cls._count_distinct_regions(haystack, geo)
+        if region_count >= 2:
+            return True, f"route_pair:{region_count}_regions"
+        return False, "no_taxi_signal"
+
+    @staticmethod
+    def _is_size_appropriate(chat: object) -> tuple[bool, str]:
+        participants = getattr(chat, "participants_count", None) or 0
+        if participants <= 0:
+            return True, "size_unknown"
+        if participants < _MIN_MEMBERS:
+            return False, f"too_small:{participants}"
+        if participants > _MAX_MEMBERS:
+            return False, f"too_large:{participants}"
+        return True, f"size_ok:{participants}"

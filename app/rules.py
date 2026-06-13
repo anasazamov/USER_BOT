@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.classifier import TaxiOrderClassifier
 from app.geo import GeoResolver
 from app.keywords import KeywordService
 from app.models import Decision, NormalizedMessage
@@ -23,11 +24,13 @@ class DecisionEngine:
         config: RuleConfig,
         keyword_service: KeywordService | None = None,
         runtime_config: RuntimeConfigService | None = None,
+        classifier: TaxiOrderClassifier | None = None,
     ) -> None:
         self.config = config
         self.geo = GeoResolver()
         self.keyword_service = keyword_service
         self.runtime_config = runtime_config
+        self.classifier = classifier
         self._keyword_version = -1
 
         self.transport_tokens: set[str] = set()
@@ -173,20 +176,27 @@ class DecisionEngine:
             score += 1
 
         order_signal = has_request_phrase or has_request or has_order_announcement or (has_transport and has_route)
+
+        def _accept(reason: str) -> Decision:
+            if self.classifier is not None and self.classifier.is_available():
+                veto, proba = self.classifier.should_veto_order(raw_text or text)
+                if veto:
+                    return Decision(
+                        False,
+                        False,
+                        reason=f"classifier_veto:{proba:.2f}",
+                    )
+            return Decision(
+                True,
+                False,
+                reason=reason,
+                region_tag=region_match.hashtag if region_match else "#Uzbekiston",
+            )
+
         if has_order_announcement and not offer_dominant:
-            return Decision(
-                True,
-                False,
-                reason="taxi_order",
-                region_tag=region_match.hashtag if region_match else "#Uzbekiston",
-            )
+            return _accept("taxi_order")
         if score >= 5 and order_signal and not offer_dominant:
-            return Decision(
-                True,
-                False,
-                reason="taxi_order",
-                region_tag=region_match.hashtag if region_match else "#Uzbekiston",
-            )
+            return _accept("taxi_order")
 
         return Decision(False, False, reason="no_order_pattern")
 

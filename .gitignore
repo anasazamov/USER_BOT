@@ -83,6 +83,7 @@ celerybeat.pid
 # Environments
 .env
 .env
+.venv/
 
 # Editor directories and files
 .idea/
@@ -112,3 +113,7 @@ $RECYCLE.BIN/
 
 # Linux
 *~
+
+# Local Telegram helper artifacts
+downloads/
+sessions/

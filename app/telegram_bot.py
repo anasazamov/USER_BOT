@@ -730,6 +730,9 @@ def build_userbot(
     keyword_service: KeywordService,
     runtime_config: RuntimeConfigService | None = None,
 ) -> TelegramUserbot:
+    from app.classifier import TaxiOrderClassifier
+
+    classifier = TaxiOrderClassifier()
     return TelegramUserbot(
         settings=settings,
         client=client,
@@ -743,6 +746,7 @@ def build_userbot(
             RuleConfig(min_length=settings.min_text_length),
             keyword_service=keyword_service,
             runtime_config=runtime_config,
+            classifier=classifier,
         ),
         executor=executor,
         repository=repository,

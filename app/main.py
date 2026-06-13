@@ -9,6 +9,7 @@ from telethon import TelegramClient
 
 from app.admin_web import AdminWebServer
 from app.config import Settings
+from app.env import load_env_file
 from app.group_discovery import GroupDiscoveryManager
 from app.invite_manager import InviteLinkManager
 from app.keywords import KeywordService
@@ -61,6 +62,7 @@ async def _wait_until_any_userbot_stops(tasks: list[asyncio.Task[None]]) -> None
 
 
 async def main() -> None:
+    load_env_file()
     settings = Settings.from_env()
     configure_logging(settings.log_level)
 
