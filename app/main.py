@@ -28,6 +28,52 @@ from app.actions import ActionExecutor
 logger = logging.getLogger(__name__)
 
 
+async def _connect_secondary_client(
+    session_name: str,
+    api_id: int,
+    api_hash: str,
+    label: str,
+) -> TelegramClient | None:
+    """Bring up a Telethon client for a *separate* Telegram account.
+
+    Each secondary account has its own session file and auth_key, so Telegram
+    treats it as an independent device. Updates are not routed to the main
+    account's slot and rate limits don't share a budget. The session must have
+    been authorized in advance via scripts/login_account.py.
+    """
+    bare = session_name.strip()
+    if not bare:
+        return None
+    db_path = bare + ".session" if not bare.endswith(".session") else bare
+    bare_path = db_path[: -len(".session")]
+    from pathlib import Path
+    if not Path(db_path).exists():
+        logger.warning(
+            "secondary_session_missing",
+            extra={
+                "action": "session_attach",
+                "label": label,
+                "reason": f"session_file_missing:{db_path}",
+            },
+        )
+        return None
+    client = TelegramClient(bare_path, api_id, api_hash)
+    await client.connect()
+    if not await client.is_user_authorized():
+        logger.warning(
+            "secondary_client_not_authorized",
+            extra={"action": "session_attach", "label": label, "reason": bare_path},
+        )
+        with suppress(Exception):
+            await client.disconnect()
+        return None
+    logger.info(
+        "secondary_client_connected",
+        extra={"action": "session_attach", "label": label, "reason": bare_path},
+    )
+    return client
+
+
 def _spawn_userbot_task(name: str, userbot: object) -> asyncio.Task[None]:
     async def _runner() -> None:
         await userbot.start()
@@ -172,6 +218,7 @@ async def main() -> None:
         classifier=classifier,
     )
     userbot_tasks: list[asyncio.Task[None]] = []
+    secondary_clients: list[TelegramClient] = []
 
     try:
         if web_server:
@@ -180,6 +227,32 @@ async def main() -> None:
             await management_bot.start()
         userbot_tasks.append(_spawn_userbot_task("userbot-primary", userbot))
         await asyncio.sleep(2.0)
+
+        # Bring up secondary accounts (if configured) so their RPCs don't share
+        # the main account's update-stream slot or rate-limit budget. Sessions
+        # must be authorized beforehand via scripts/login_account.py. If a
+        # session file is missing or unauthorized, we silently fall back to the
+        # main client.
+        try:
+            join_client = await _connect_secondary_client(
+                settings.join_session_name, settings.api_id, settings.api_hash, "join"
+            )
+            if join_client is not None:
+                secondary_clients.append(join_client)
+                executor.join_client = join_client
+        except Exception:
+            logger.exception("join_client_init_failed")
+        if discovery_manager:
+            try:
+                discovery_client = await _connect_secondary_client(
+                    settings.discovery_session_name, settings.api_id, settings.api_hash, "disc"
+                )
+                if discovery_client is not None:
+                    secondary_clients.append(discovery_client)
+                    discovery_manager.client = discovery_client
+            except Exception:
+                logger.exception("discovery_client_init_failed")
+
         with suppress(Exception):
             await invite_manager.run_once()
         if discovery_manager:
@@ -190,6 +263,9 @@ async def main() -> None:
             await discovery_manager.start()
         await _wait_until_any_userbot_stops(userbot_tasks)
     finally:
+        for sc in secondary_clients:
+            with suppress(Exception):
+                await sc.disconnect()
         if web_server:
             with suppress(Exception):
                 await web_server.stop()

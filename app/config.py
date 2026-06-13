@@ -102,6 +102,10 @@ class Settings:
     )
     priority_group_links_2: tuple[str, ...] = ()
     classifier_veto_threshold: float = 0.3
+    # Optional separate Telegram accounts (each with its own session/auth_key)
+    # for offloading heavy work. Empty string means "use the main client".
+    discovery_session_name: str = ""
+    join_session_name: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -194,6 +198,8 @@ class Settings:
                 if q.strip()
             ),
             classifier_veto_threshold=float(os.environ.get("CLASSIFIER_VETO_THRESHOLD", "0.3")),
+            discovery_session_name=(os.environ.get("TG_DISCOVERY_SESSION_NAME") or "").strip(),
+            join_session_name=(os.environ.get("TG_JOIN_SESSION_NAME") or "").strip(),
             priority_group_links=tuple(
                 q.strip()
                 for q in os.environ.get(
