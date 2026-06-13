@@ -415,6 +415,63 @@ class ActionRepository:
             for row in rows
         ]
 
+    async def fetch_joined_group_health(
+        self,
+        window_hours: int = 48,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Per-source-group forward counts over the last N hours.
+
+        Joins discovered_groups against action_log to surface which groups
+        actually produce orders the bot ends up forwarding. Used by the admin
+        UI to decide which dead/low-yield groups to leave.
+
+        Returns one row per joined+active group with:
+          peer_id, title, username, source_query, recent_publishes,
+          recent_attempts, last_publish_at
+        """
+        if not self.db.pool:
+            raise RuntimeError("db_not_connected")
+        query = """
+        SELECT
+            dg.peer_id,
+            COALESCE(dg.title, '') AS title,
+            COALESCE(dg.username, '') AS username,
+            COALESCE(dg.source_query, '') AS source_query,
+            COALESCE(SUM(CASE WHEN al.action_type IN ('publish','publish_edit')
+                              AND al.status = 'ok'
+                              AND al.created_at > NOW() - ($1::int * INTERVAL '1 hour')
+                         THEN 1 ELSE 0 END), 0) AS recent_publishes,
+            COALESCE(SUM(CASE WHEN al.action_type = 'publish_attempt'
+                              AND al.created_at > NOW() - ($1::int * INTERVAL '1 hour')
+                         THEN 1 ELSE 0 END), 0) AS recent_attempts,
+            MAX(CASE WHEN al.action_type IN ('publish','publish_edit')
+                     AND al.status = 'ok'
+                THEN al.created_at END) AS last_publish_at
+        FROM discovered_groups dg
+        LEFT JOIN action_log al ON al.chat_id = dg.peer_id
+        WHERE dg.joined = TRUE AND dg.active = TRUE
+        GROUP BY dg.peer_id, dg.title, dg.username, dg.source_query
+        ORDER BY recent_publishes DESC, dg.updated_at DESC
+        LIMIT $2
+        """
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(query, window_hours, limit)
+        return [
+            {
+                "peer_id": int(row["peer_id"]),
+                "title": row["title"],
+                "username": row["username"],
+                "source_query": row["source_query"],
+                "recent_publishes": int(row["recent_publishes"]),
+                "recent_attempts": int(row["recent_attempts"]),
+                "last_publish_at": row["last_publish_at"].isoformat()
+                    if row["last_publish_at"]
+                    else None,
+            }
+            for row in rows
+        ]
+
     async def fetch_unjoined_public_groups(self, limit: int) -> list[DiscoveredGroup]:
         if not self.db.pool:
             raise RuntimeError("db_not_connected")

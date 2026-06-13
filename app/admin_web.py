@@ -57,6 +57,8 @@ class AdminWebServer:
                 web.post("/api/discovery/groups/join", self._api_discovery_join),
                 web.post("/api/discovery/groups/join_batch", self._api_discovery_join_batch),
                 web.post("/api/discovery/run", self._api_discovery_run),
+                web.get("/api/discovery/health", self._api_discovery_health),
+                web.post("/api/discovery/leave", self._api_discovery_leave),
             ]
         )
         self._runner = web.AppRunner(app)
@@ -363,6 +365,79 @@ class AdminWebServer:
                 "joined": joined_count,
                 "failed": failed_count,
                 "floodwait_remaining_sec": int(remaining) if remaining > 0 else 0,
+            }
+        )
+
+    async def _api_discovery_health(self, request: web.Request) -> web.Response:
+        try:
+            hours = max(1, min(int(request.query.get("hours", "48")), 720))
+        except ValueError:
+            hours = 48
+        try:
+            limit = max(10, min(int(request.query.get("limit", "300")), 1000))
+        except ValueError:
+            limit = 300
+        rows = await self.repository.fetch_joined_group_health(window_hours=hours, limit=limit)
+        return web.json_response(
+            {
+                "window_hours": hours,
+                "count": len(rows),
+                "groups": rows,
+            }
+        )
+
+    async def _api_discovery_leave(self, request: web.Request) -> web.Response:
+        """Mark a discovered group inactive AND have the userbot leave it via
+        LeaveChannelRequest, so its update stream stops contributing to the
+        single-connection load. Idempotent: missing groups return 404; already-
+        left groups still flip the active flag for bookkeeping."""
+        executor = getattr(self.discovery_manager, "executor", None) if self.discovery_manager else None
+        payload = await self._read_payload(request)
+        peer_id_raw = payload.get("peer_id")
+        username = str(payload.get("username", "")).strip().lstrip("@").lower() or None
+        try:
+            peer_id = int(peer_id_raw) if peer_id_raw is not None else 0
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_peer_id"}, status=400)
+        if peer_id == 0 and not username:
+            return web.json_response({"error": "peer_id_or_username_required"}, status=400)
+
+        # Flip the DB flag first so the bot stops counting this chat as joined
+        # even if the LeaveChannelRequest itself fails.
+        if username:
+            try:
+                await self.repository.set_public_group_active(username, False)
+            except Exception:
+                logger.exception("admin_discovery_leave_db_failed")
+
+        client = getattr(executor, "client", None) if executor else None
+        left = False
+        leave_error: str | None = None
+        if client is not None and (username or peer_id):
+            try:
+                from telethon import functions as _functions
+
+                target = f"@{username}" if username else peer_id
+                await client(_functions.channels.LeaveChannelRequest(channel=target))
+                left = True
+            except Exception as exc:
+                leave_error = repr(exc)
+                logger.warning(
+                    "admin_discovery_leave_api_failed",
+                    extra={
+                        "action": "leave_channel",
+                        "reason": leave_error,
+                        "chat_id": peer_id,
+                        "chat_username": username or "",
+                    },
+                )
+        return web.json_response(
+            {
+                "status": "ok",
+                "left": left,
+                "leave_error": leave_error,
+                "username": username,
+                "peer_id": peer_id,
             }
         )
 
@@ -1049,6 +1124,7 @@ class AdminWebServer:
                 <button class="btn-mini" onclick="loadDiscoveredGroups('inactive')">Inactive</button>
                 <button class="btn-mini btn-primary" onclick="discoveryJoinBatch(10)" title="10 ta navbatdagi guruhga kirish">Join Next 10</button>
                 <button class="btn-mini btn-primary" onclick="discoveryJoinBatch(30)" title="30 ta navbatdagi guruhga kirish">Join Next 30</button>
+                <button class="btn-mini" onclick="loadGroupHealth()" title="Joined guruhlar sifati — 48 soatda nechta buyurtma forward qilingan">Health</button>
               </div>
               <div id="discovery_summary" class="muted" style="margin-top:8px;"></div>
               <div id="discovery_list" style="margin-top:10px;"></div>
@@ -1456,6 +1532,51 @@ class AdminWebServer:
         }}
         setStatus(msg, res.failed > res.joined);
         await loadDiscoveredGroups();
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    async function loadGroupHealth() {{
+      setBusy(true);
+      try {{
+        const data = await req('/api/discovery/health?hours=48&limit=200');
+        const list = document.getElementById('discovery_list');
+        const summary = document.getElementById('discovery_summary');
+        summary.textContent = data.count + ' joined guruh, 48 soatda forward soni bilan';
+        list.innerHTML = data.groups.map(g => {{
+          const labelHandle = g.username ? '@' + g.username : (g.title || g.peer_id);
+          const leaveBtn = (
+            '<button class="btn-mini" onclick="discoveryLeave(' + g.peer_id + ', \\'' + (g.username||'') + '\\')">Leave</button>'
+          );
+          const cls = g.recent_publishes > 0 ? 'status-ok' : 'muted';
+          return (
+            '<div class="row" style="padding:6px 0; border-bottom:1px solid var(--line); gap:8px;">' +
+              '<span class="' + cls + '" style="min-width:50px;text-align:right;font-variant-numeric:tabular-nums;">' + g.recent_publishes + '</span>' +
+              '<span style="flex:1; word-break:break-all;">' + escapeHtml(g.title || '(no title)') + '<br><small class="muted">' + escapeHtml(labelHandle) + ' · last_pub: ' + escapeHtml(g.last_publish_at || '-') + '</small></span>' +
+              leaveBtn +
+            '</div>'
+          );
+        }}).join('');
+        setStatus('Health hisoboti: ' + data.count + ' guruh');
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    async function discoveryLeave(peerId, username) {{
+      if (!confirm('Bu guruhdan chiqasizmi? Update stream yuki kamayadi.')) return;
+      setBusy(true);
+      try {{
+        const res = await req('/api/discovery/leave', {{peer_id: peerId, username}});
+        if (res.left) {{
+          setStatus('Guruhdan chiqildi: @' + (username||peerId));
+        }} else {{
+          setStatus('Faqat DB belgilandi (leave xato: ' + (res.leave_error||'unknown') + ')', true);
+        }}
+        await loadGroupHealth();
       }} catch (e) {{
         setStatus(String(e), true);
       }} finally {{
