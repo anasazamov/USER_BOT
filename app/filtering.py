@@ -85,95 +85,17 @@ class FastFilter:
         self._sync_dynamic_keywords(force=True)
 
     def evaluate(self, normalized_text: str) -> FastFilterResult:
-        self._sync_dynamic_keywords()
-        min_length = (
-            self.runtime_config.snapshot().min_text_length if self.runtime_config else self.min_length
-        )
+        """Model-driven pipeline: this filter only drops obvious empties/too-short
+        messages. The real order-vs-not-order decision is delegated to
+        TaxiOrderClassifier inside DecisionEngine. We don't run any keyword
+        regex here so the model sees every plausible message and can pick up
+        order patterns the regex would miss.
+        """
         if not normalized_text:
             return FastFilterResult(False, "empty_text", 0)
-
-        tokens = tokenize(normalized_text)
-        has_short_order = bool(self.short_order_pattern.search(normalized_text))
-        if (
-            len(normalized_text) < min_length
-            and not self.route_pattern.search(normalized_text)
-            and not self.suffix_route_pattern.search(normalized_text)
-            and not has_short_order
-        ):
+        if len(normalized_text.strip()) < 5:
             return FastFilterResult(False, "too_short", 0)
-
-        if any(token in self.exclude_tokens for token in tokens):
-            return FastFilterResult(False, "exclude_keyword", 0)
-
-        stemmed_tokens = [self._stem_token(token) for token in tokens]
-        transport_hits = self._count_fuzzy_hits(tokens, self.transport_tokens, self._transport_by_len)
-        request_hits = self._count_fuzzy_hits(tokens, self.request_tokens, self._request_by_len)
-        offer_hits = self._count_fuzzy_hits(tokens, self.offer_tokens, self._offer_by_len)
-        location_hits = self._count_fuzzy_hits(stemmed_tokens, self.location_tokens, self._location_by_len)
-        route_hits = self._count_exact_hits(tokens, self.route_tokens)
-        has_route = bool(self.route_pattern.search(normalized_text)) or bool(self.suffix_route_pattern.search(normalized_text))
-        has_people = bool(self.people_pattern.search(normalized_text))
-        has_passenger_announcement = bool(self.passenger_announcement_pattern.search(normalized_text))
-        has_bor_people = bool(self.bor_people_pattern.search(normalized_text))
-        has_passenger_needed = bool(self.passenger_needed_pattern.search(normalized_text))
-        has_route_request = bool(self.route_request_pattern.search(normalized_text))
-        has_yuramiz = "yuramiz" in tokens or "yuryamiz" in tokens
-        has_request_phrase = bool(self.request_phrase_pattern.search(normalized_text))
-        has_offer_context = bool(self.offer_context_pattern.search(normalized_text))
-        has_vehicle_model = bool(self.vehicle_model_pattern.search(normalized_text))
-        has_phone = bool(self.phone_pattern.search(normalized_text))
-        has_region = self.geo.detect_region(normalized_text) is not None
-        has_order_announcement = (
-            (has_route and (has_passenger_announcement or has_bor_people))
-            or has_route_request
-            or (has_route and has_request_phrase and has_people)
-            or has_short_order
-        )
-
-        offer_dominant = (
-            has_offer_context
-            or has_vehicle_model
-            or (offer_hits > 0 and has_passenger_needed)
-            or (has_passenger_needed and has_route and transport_hits > 0)
-        )
-        if offer_hits > 0 and not has_request_phrase:
-            return FastFilterResult(False, "likely_taxi_offer", 0)
-        if has_yuramiz:
-            return FastFilterResult(False, "likely_taxi_offer", 0)
-        if offer_dominant and not has_request_phrase:
-            return FastFilterResult(False, "likely_taxi_offer", 0)
-
-        score = 0
-        if has_request_phrase:
-            score += 2
-        elif request_hits:
-            score += 1
-        if transport_hits:
-            score += 1
-        if has_route or route_hits >= 1:
-            score += 2
-        if has_order_announcement:
-            score += 2
-        if location_hits or has_region:
-            score += 1
-        if has_people:
-            score += 1
-        if has_phone:
-            score += 1
-
-        request_signal = has_request_phrase or request_hits > 0 or has_order_announcement
-        if has_order_announcement and not offer_dominant:
-            return FastFilterResult(True, "candidate_order", score)
-        if score >= 4 and request_signal and not offer_dominant:
-            return FastFilterResult(True, "candidate_order", score)
-        if (
-            score >= 3
-            and request_signal
-            and (location_hits > 0 or has_region or has_route)
-            and not offer_dominant
-        ):
-            return FastFilterResult(True, "candidate_order", score)
-        return FastFilterResult(False, "no_order_signal", score)
+        return FastFilterResult(True, "pass_to_model", 1)
 
     def _sync_dynamic_keywords(self, force: bool = False) -> None:
         if not self.keyword_service:

@@ -92,116 +92,44 @@ class DecisionEngine:
         self._sync_dynamic_keywords(force=True)
 
     def decide(self, message: NormalizedMessage) -> Decision:
-        self._sync_dynamic_keywords()
-
+        """Model-only decision. We no longer consult any of the legacy regex
+        signals (offer_context_pattern, request_phrase_pattern, exclude_tokens,
+        etc.); the classifier sees the raw text and decides on its own. The
+        regex compilation is kept on the instance for backward compatibility
+        with code that still reads those attributes, but `.decide()` does not
+        depend on it.
+        """
         text = message.normalized_text
         raw_text = message.envelope.raw_text or ""
-        min_length = self.runtime_config.snapshot().min_text_length if self.runtime_config else self.config.min_length
         if not text:
             return Decision(False, False, reason="empty_text")
+        if len(text.strip()) < 5:
+            return Decision(False, False, reason="too_short")
 
-        has_short_order = bool(self.short_order_pattern.search(text))
-        if len(text) < min_length:
-            if (
-                not self.route_pattern.search(text)
-                and not self.suffix_route_pattern.search(text)
-                and not has_short_order
-            ):
-                return Decision(False, False, reason="too_short")
+        if self.classifier is None or not self.classifier.is_available():
+            return Decision(False, False, reason="classifier_unavailable")
 
-        tokens = tokenize(text)
-        stemmed_tokens = {self._stem_token(token) for token in tokens}
-        has_transport = bool(self.transport_pattern.search(text))
-        has_request = bool(self.request_pattern.search(text))
-        has_offer = bool(self.offer_pattern.search(text))
-        has_request_phrase = bool(self.request_phrase_pattern.search(text))
-        has_offer_context = bool(self.offer_context_pattern.search(text))
-        has_vehicle_model = bool(self.vehicle_model_pattern.search(text))
-        has_route = bool(self.route_pattern.search(text)) or bool(self.suffix_route_pattern.search(text))
+        proba = self.classifier.predict_order_probability(raw_text or text)
+        if proba is None:
+            return Decision(False, False, reason="classifier_no_proba")
+
+        # `classifier_veto_threshold` is reused as the *accept* threshold: the
+        # model must give P(order) ≥ threshold for the message to be forwarded.
+        threshold = (
+            self.runtime_config.snapshot().classifier_veto_threshold
+            if self.runtime_config
+            else 0.5
+        )
+        if proba < threshold:
+            return Decision(False, False, reason=f"model_not_order:{proba:.2f}")
+
         region_match = self.geo.detect_region(text)
-        has_location = bool(self.location_pattern.search(text)) or bool(stemmed_tokens & self.location_tokens) or bool(
-            region_match
+        return Decision(
+            True,
+            False,
+            reason=f"model_order:{proba:.2f}",
+            region_tag=region_match.hashtag if region_match else "#Uzbekiston",
         )
-        has_exclude = bool(self.exclude_pattern.search(text))
-        has_people = bool(self.people_pattern.search(text))
-        has_passenger_announcement = bool(self.passenger_announcement_pattern.search(text))
-        has_bor_people = bool(self.bor_people_pattern.search(text))
-        has_passenger_needed = bool(self.passenger_needed_pattern.search(text))
-        has_route_request = bool(self.route_request_pattern.search(text))
-        has_yuramiz = "yuramiz" in tokens or "yuryamiz" in tokens
-
-        has_phone = bool(self.phone_pattern.search(raw_text)) or bool(self.phone_pattern.search(text))
-        has_username = bool(self.username_pattern.search(raw_text))
-        has_contact = has_phone or has_username
-        has_order_announcement = (
-            (has_route and (has_passenger_announcement or has_bor_people))
-            or has_route_request
-            or (has_route and has_request_phrase and has_people)
-            or has_short_order
-        )
-
-        if has_exclude:
-            return Decision(False, False, reason="excluded_category")
-
-        if not has_contact and not has_order_announcement:
-            return Decision(False, False, reason="no_contact")
-
-        # Offer messages are ignored unless there is explicit request phrase.
-        if has_offer and not has_request_phrase:
-            return Decision(False, False, reason="taxi_offer")
-        if has_yuramiz:
-            return Decision(False, False, reason="taxi_offer")
-        offer_dominant = (
-            has_offer_context
-            or has_vehicle_model
-            or (has_offer and has_passenger_needed)
-            or (has_passenger_needed and has_route and has_transport)
-        )
-        if offer_dominant and not has_request_phrase:
-            return Decision(False, False, reason="taxi_offer")
-
-        score = 0
-        if has_request_phrase:
-            score += 2
-        elif has_request:
-            score += 1
-        if has_transport:
-            score += 1
-        if has_route:
-            score += 2
-        if has_order_announcement:
-            score += 2
-        if has_location:
-            score += 1
-        if has_people:
-            score += 1
-        if has_contact:
-            score += 1
-
-        order_signal = has_request_phrase or has_request or has_order_announcement or (has_transport and has_route)
-
-        def _accept(reason: str) -> Decision:
-            if self.classifier is not None and self.classifier.is_available():
-                veto, proba = self.classifier.should_veto_order(raw_text or text)
-                if veto:
-                    return Decision(
-                        False,
-                        False,
-                        reason=f"classifier_veto:{proba:.2f}",
-                    )
-            return Decision(
-                True,
-                False,
-                reason=reason,
-                region_tag=region_match.hashtag if region_match else "#Uzbekiston",
-            )
-
-        if has_order_announcement and not offer_dominant:
-            return _accept("taxi_order")
-        if score >= 5 and order_signal and not offer_dominant:
-            return _accept("taxi_order")
-
-        return Decision(False, False, reason="no_order_pattern")
 
     def _sync_dynamic_keywords(self, force: bool = False) -> None:
         if not self.keyword_service:

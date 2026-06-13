@@ -1,4 +1,6 @@
-﻿from app.models import MessageEnvelope, NormalizedMessage
+from types import SimpleNamespace
+
+from app.models import MessageEnvelope, NormalizedMessage
 from app.rules import DecisionEngine, RuleConfig
 from app.text import normalize_text
 
@@ -10,103 +12,110 @@ def _msg(raw_text: str) -> NormalizedMessage:
     )
 
 
-def test_decision_accepts_order_with_phone_contact() -> None:
+class _StubClassifier:
+    """In-memory classifier double used to verify decision logic without loading
+    the real joblib model."""
+
+    def __init__(self, proba: float, threshold: float = 0.5, available: bool = True) -> None:
+        self._proba = proba
+        self._available = available
+        self.veto_threshold = threshold
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def predict_order_probability(self, text: str) -> float | None:
+        return self._proba if self._available else None
+
+
+class _RuntimeWithThreshold:
+    def __init__(self, threshold: float) -> None:
+        self._threshold = threshold
+
+    def snapshot(self):
+        return SimpleNamespace(classifier_veto_threshold=self._threshold)
+
+
+def test_decision_drops_when_no_classifier() -> None:
+    # Without a classifier we deliberately refuse to forward — the new pipeline
+    # is model-only, so a missing model file must not silently fall back to
+    # regex behaviour or to "forward everything".
     engine = DecisionEngine(RuleConfig(min_length=10))
+    decision = engine.decide(_msg("toshkentdan samarqandga taxi kerak +998901234567"))
+    assert decision.should_forward is False
+    assert decision.reason == "classifier_unavailable"
+
+
+def test_decision_drops_when_classifier_unavailable() -> None:
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        classifier=_StubClassifier(proba=0.99, available=False),
+    )
+    decision = engine.decide(_msg("toshkentdan samarqandga taxi kerak +998901234567"))
+    assert decision.should_forward is False
+    assert decision.reason == "classifier_unavailable"
+
+
+def test_decision_drops_empty_text() -> None:
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        classifier=_StubClassifier(proba=0.99),
+    )
+    decision = engine.decide(_msg(""))
+    assert decision.should_forward is False
+    assert decision.reason == "empty_text"
+
+
+def test_decision_drops_too_short() -> None:
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        classifier=_StubClassifier(proba=0.99),
+    )
+    decision = engine.decide(_msg("ok"))
+    assert decision.should_forward is False
+    assert decision.reason == "too_short"
+
+
+def test_decision_forwards_when_proba_above_threshold() -> None:
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        runtime_config=_RuntimeWithThreshold(0.5),
+        classifier=_StubClassifier(proba=0.85, threshold=0.5),
+    )
     decision = engine.decide(_msg("Toshkentdan Samarqandga taxi kerak +998901234567"))
     assert decision.should_forward is True
-    assert decision.should_reply is False
-    assert decision.reason == "taxi_order"
-    assert decision.region_tag is not None
+    assert decision.reason.startswith("model_order:")
+    assert decision.region_tag is not None  # region detected from text
 
 
-def test_decision_accepts_clear_order_without_contact() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("toshkentdan andijonga taxi kerak 2 odam"))
-    assert decision.should_forward is True
-    assert decision.should_reply is False
-    assert decision.reason == "taxi_order"
-
-
-def test_decision_rejects_taxi_offer_even_with_contact() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
+def test_decision_drops_when_proba_below_threshold() -> None:
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        runtime_config=_RuntimeWithThreshold(0.5),
+        classifier=_StubClassifier(proba=0.20, threshold=0.5),
+    )
     decision = engine.decide(_msg("toshkentga boraman moshin bor +998901234567"))
     assert decision.should_forward is False
-    assert decision.reason == "taxi_offer"
+    assert decision.reason.startswith("model_not_order:")
 
 
-def test_decision_accepts_cyrillic_order_with_username_contact() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    raw = (
-        "\u0442\u0430\u043a\u0441\u0438 \u043a\u0435\u0440\u0430\u043a "
-        "\u0442\u043e\u0448\u043a\u0435\u043d\u0442\u0434\u0430\u043d "
-        "\u043d\u0430\u043c\u0430\u043d\u0433\u0430\u043d\u0433\u0430 @haydovchi_uz"
+def test_decision_strict_less_than_threshold_boundary() -> None:
+    # At exactly the threshold the message is accepted (>=, not >).
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        runtime_config=_RuntimeWithThreshold(0.5),
+        classifier=_StubClassifier(proba=0.5, threshold=0.5),
     )
-    decision = engine.decide(_msg(raw))
+    decision = engine.decide(_msg("Toshkentdan Samarqandga taxi kerak +998901234567"))
     assert decision.should_forward is True
 
 
-def test_decision_rejects_ads() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("vakansiya reklama va kurs +998901234567"))
-    assert decision.should_forward is False
-    assert decision.reason == "excluded_category"
-
-
-def test_decision_rejects_driver_offer_with_people_needed() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    raw = (
-        "\u041f\u0438\u0442\u0435\u0440\u0434\u0430\u043d \u0445\u043e\u0440\u0430\u0437\u043c\u0433\u0430 "
-        "\u043c\u043e\u0448\u0438\u043d\u0434\u0430 \u043a\u0435\u0442\u044f\u043f\u043c\u0430\u043d "
-        "2 \u043e\u0434\u0430\u043c \u043a\u0435\u0440\u0430\u043a +998901234567"
+def test_decision_threshold_default_when_no_runtime_config() -> None:
+    # Without runtime_config the default accept threshold is 0.5.
+    engine = DecisionEngine(
+        RuleConfig(min_length=10),
+        classifier=_StubClassifier(proba=0.49, threshold=0.5),
     )
-    decision = engine.decide(_msg(raw))
+    decision = engine.decide(_msg("Toshkentdan Samarqandga taxi kerak +998901234567"))
     assert decision.should_forward is False
-    assert decision.reason == "taxi_offer"
-
-
-def test_decision_rejects_service_offer_message() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    raw = (
-        "toshkentdan zarbdorga yuraman zakazga ham yuraman "
-        "kobalt bagaj bor tel +998945741041"
-    )
-    decision = engine.decide(_msg(raw))
-    assert decision.should_forward is False
-    assert decision.reason == "taxi_offer"
-
-
-def test_decision_accepts_passenger_style_order_without_contact() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("Shaxardan jartepaga 1 ta odam bor"))
-    assert decision.should_forward is True
-    assert decision.should_reply is False
-    assert decision.reason == "taxi_order"
-
-
-def test_decision_accepts_route_request_with_pochta() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("Shahardan yuradigan kim bor pochta bor"))
-    assert decision.should_forward is True
-    assert decision.should_reply is False
-    assert decision.reason == "taxi_order"
-
-
-def test_decision_rejects_text_with_yuramiz() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("toshkentdan jizzaxga 2 kishi yuramiz +998901112233"))
-    assert decision.should_forward is False
-    assert decision.reason == "taxi_offer"
-
-
-def test_decision_accepts_route_with_bor_odam_phrase() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=10))
-    decision = engine.decide(_msg("samarqanddan toshkentga bor odam +998901234567"))
-    assert decision.should_forward is True
-    assert decision.reason == "taxi_order"
-
-
-def test_decision_accepts_short_bor_odam_without_route() -> None:
-    engine = DecisionEngine(RuleConfig(min_length=18))
-    decision = engine.decide(_msg("odam bor"))
-    assert decision.should_forward is True
-    assert decision.reason == "taxi_order"
+    assert decision.reason.startswith("model_not_order:")
