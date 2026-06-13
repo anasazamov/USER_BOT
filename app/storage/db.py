@@ -450,7 +450,10 @@ class ActionRepository:
                 THEN al.created_at END) AS last_publish_at,
             MAX(dg.updated_at) AS group_updated_at
         FROM discovered_groups dg
-        LEFT JOIN action_log al ON al.chat_id = dg.peer_id
+        -- discovered_groups.peer_id stores the bare channel id (positive),
+        -- whereas action_log.chat_id stores the full -100<peer_id> form
+        -- that Telethon publishes to. Bridge them mathematically here.
+        LEFT JOIN action_log al ON al.chat_id = -(1000000000000::bigint + dg.peer_id)
         WHERE dg.joined = TRUE AND dg.active = TRUE
         GROUP BY dg.peer_id, dg.title, dg.username, dg.source_query
         ORDER BY recent_publishes DESC, group_updated_at DESC
