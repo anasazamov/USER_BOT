@@ -31,6 +31,7 @@ class TaxiOrderClassifier:
         self,
         model_path: Path | str | None = None,
         veto_threshold: float | None = None,
+        runtime_config: Any = None,
     ) -> None:
         env_path = os.environ.get("CLASSIFIER_MODEL_PATH")
         chosen_path = model_path or env_path or _DEFAULT_MODEL_PATH
@@ -42,11 +43,25 @@ class TaxiOrderClassifier:
             if veto_threshold is not None
             else (float(env_threshold) if env_threshold else _DEFAULT_VETO_THRESHOLD)
         )
-        self.veto_threshold = float(chosen_threshold)
+        self._fallback_threshold = float(chosen_threshold)
+        # When runtime_config is provided, the live snapshot wins each call so admins
+        # can retune the veto threshold from the web panel without restarting the bot.
+        self.runtime_config = runtime_config
 
         self._pipeline: Any = None
         self._normalizer = None
         self._load_attempted = False
+
+    @property
+    def veto_threshold(self) -> float:
+        if self.runtime_config is not None:
+            try:
+                value = getattr(self.runtime_config.snapshot(), "classifier_veto_threshold", None)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                pass
+        return self._fallback_threshold
 
     def _ensure_loaded(self) -> None:
         if self._load_attempted:

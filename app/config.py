@@ -101,6 +101,7 @@ class Settings:
         "t.me/Toshkent_samarqan_taksi",
     )
     priority_group_links_2: tuple[str, ...] = ()
+    classifier_veto_threshold: float = 0.3
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -192,6 +193,7 @@ class Settings:
                 ).split(",")
                 if q.strip()
             ),
+            classifier_veto_threshold=float(os.environ.get("CLASSIFIER_VETO_THRESHOLD", "0.3")),
             priority_group_links=tuple(
                 q.strip()
                 for q in os.environ.get(

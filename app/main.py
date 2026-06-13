@@ -8,6 +8,7 @@ from contextlib import suppress
 from telethon import TelegramClient
 
 from app.admin_web import AdminWebServer
+from app.classifier import TaxiOrderClassifier
 from app.config import Settings
 from app.env import load_env_file
 from app.group_discovery import GroupDiscoveryManager
@@ -137,14 +138,7 @@ async def main() -> None:
     with suppress(Exception):
         await executor.refresh_private_invite_route_cache()
     invite_manager = InviteLinkManager(repository, executor, client, settings.invite_sync_interval_sec)
-    web_server: AdminWebServer | None = None
-    if settings.admin_web_enabled:
-        web_server = AdminWebServer(
-            settings=settings,
-            keyword_service=keyword_service,
-            repository=repository,
-            runtime_config=runtime_config,
-        )
+    classifier = TaxiOrderClassifier(runtime_config=runtime_config)
     discovery_manager: GroupDiscoveryManager | None = None
     if settings.discovery_enabled:
         discovery_manager = GroupDiscoveryManager(
@@ -157,6 +151,16 @@ async def main() -> None:
             join_batch=settings.discovery_join_batch,
             runtime_config=runtime_config,
         )
+    web_server: AdminWebServer | None = None
+    if settings.admin_web_enabled:
+        web_server = AdminWebServer(
+            settings=settings,
+            keyword_service=keyword_service,
+            repository=repository,
+            runtime_config=runtime_config,
+            classifier=classifier,
+            discovery_manager=discovery_manager,
+        )
     userbot = build_userbot(
         settings,
         client,
@@ -165,6 +169,7 @@ async def main() -> None:
         repository,
         keyword_service,
         runtime_config=runtime_config,
+        classifier=classifier,
     )
     userbot_tasks: list[asyncio.Task[None]] = []
 

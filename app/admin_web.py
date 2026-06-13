@@ -21,11 +21,15 @@ class AdminWebServer:
         keyword_service: KeywordService,
         repository: ActionRepository,
         runtime_config: RuntimeConfigService | None = None,
+        classifier: Any = None,
+        discovery_manager: Any = None,
     ) -> None:
         self.settings = settings
         self.keyword_service = keyword_service
         self.repository = repository
         self.runtime_config = runtime_config
+        self.classifier = classifier
+        self.discovery_manager = discovery_manager
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
 
@@ -47,6 +51,10 @@ class AdminWebServer:
                 web.post("/api/groups/public/toggle", self._api_public_toggle),
                 web.get("/api/config", self._api_get_config),
                 web.post("/api/config", self._api_set_config),
+                web.get("/api/classifier", self._api_classifier_status),
+                web.get("/api/discovery/groups", self._api_discovery_groups),
+                web.post("/api/discovery/groups/toggle", self._api_discovery_toggle),
+                web.post("/api/discovery/run", self._api_discovery_run),
             ]
         )
         self._runner = web.AppRunner(app)
@@ -215,6 +223,78 @@ class AdminWebServer:
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"status": "ok", "config": snapshot.as_json()})
+
+    async def _api_classifier_status(self, _: web.Request) -> web.Response:
+        if self.classifier is None:
+            return web.json_response({"enabled": False, "reason": "no_classifier_attached"})
+        try:
+            available = bool(self.classifier.is_available())
+        except Exception as exc:
+            return web.json_response({"enabled": False, "reason": f"check_failed:{exc!r}"})
+        threshold = float(getattr(self.classifier, "veto_threshold", 0.3))
+        model_path = str(getattr(self.classifier, "model_path", ""))
+        return web.json_response(
+            {
+                "enabled": True,
+                "available": available,
+                "veto_threshold": threshold,
+                "model_path": model_path,
+            }
+        )
+
+    async def _api_discovery_groups(self, request: web.Request) -> web.Response:
+        status = (request.query.get("status") or "all").strip().lower()
+        try:
+            limit = max(1, min(int(request.query.get("limit", "200")), 1000))
+        except ValueError:
+            limit = 200
+        rows = await self.repository.fetch_public_groups(limit=limit)
+        if status == "joined":
+            rows = [r for r in rows if r.joined and r.active]
+        elif status == "pending":
+            rows = [r for r in rows if not r.joined and r.active]
+        elif status == "inactive":
+            rows = [r for r in rows if not r.active]
+        # status == "all" or anything else returns full list.
+        return web.json_response(
+            {
+                "count": len(rows),
+                "status_filter": status,
+                "groups": [
+                    {
+                        "peer_id": row.peer_id,
+                        "title": row.title,
+                        "username": row.username,
+                        "joined": row.joined,
+                        "active": row.active,
+                        "source_query": row.source_query,
+                        "last_error": row.last_error,
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+    async def _api_discovery_toggle(self, request: web.Request) -> web.Response:
+        payload = await self._read_payload(request)
+        username = str(payload.get("username", "")).strip().lstrip("@").lower()
+        if not username:
+            return web.json_response({"error": "username_required"}, status=400)
+        active = self._to_bool(payload.get("active", True))
+        ok = await self.repository.set_public_group_active(username, active)
+        if not ok:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response({"status": "ok", "username": username, "active": active})
+
+    async def _api_discovery_run(self, _: web.Request) -> web.Response:
+        if self.discovery_manager is None:
+            return web.json_response({"error": "discovery_manager_unavailable"}, status=503)
+        try:
+            await self.discovery_manager.run_once()
+        except Exception as exc:
+            logger.exception("admin_discovery_run_failed")
+            return web.json_response({"error": f"run_failed:{exc!r}"}, status=500)
+        return web.json_response({"status": "ok"})
 
     async def _index(self, request: web.Request) -> web.Response:
         token = request.query.get("token", "")
@@ -841,6 +921,56 @@ class AdminWebServer:
               </div>
               <div class="section-note">Querylar vergul yoki yangi qatorda bo'lishi mumkin.</div>
             </div>
+
+            <div class="soft-box">
+              <div class="field">
+                <label>Classifier Veto Threshold (0.0-1.0)</label>
+                <input id="cfg_classifier_veto_threshold" placeholder="masalan 0.30" />
+              </div>
+              <div class="section-note">Modelda P(order) shu chegaradan past bo'lsa, regex 'order' qarorini bekor qiladi. Past qiymat (0.15) = yumshoq veto, yuqori (0.40) = qattiq veto.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="classifierCard">
+          <div class="card-head">
+            <div>
+              <h3>Classifier</h3>
+              <div class="meta">ML model holati</div>
+            </div>
+            <div class="card-actions">
+              <button class="btn-mini" onclick="loadClassifierStatus()">Reload</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="soft-box">
+              <div id="classifier_summary" class="muted">Yuklanmoqda...</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="discoveryCard">
+          <div class="card-head">
+            <div>
+              <h3>Discovery</h3>
+              <div class="meta">Topilgan guruhlar va crawler</div>
+            </div>
+            <div class="card-actions">
+              <button class="btn-mini" onclick="loadDiscoveredGroups()">Reload</button>
+              <button class="btn-mini btn-primary" onclick="discoveryRun()">Run Now</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="soft-box">
+              <div class="row" style="gap:8px;flex-wrap:wrap;">
+                <button class="btn-mini" onclick="loadDiscoveredGroups('all')">All</button>
+                <button class="btn-mini" onclick="loadDiscoveredGroups('joined')">Joined</button>
+                <button class="btn-mini" onclick="loadDiscoveredGroups('pending')">Pending</button>
+                <button class="btn-mini" onclick="loadDiscoveredGroups('inactive')">Inactive</button>
+              </div>
+              <div id="discovery_summary" class="muted" style="margin-top:8px;"></div>
+              <div id="discovery_list" style="margin-top:10px;"></div>
+            </div>
           </div>
         </section>
 
@@ -1121,7 +1251,13 @@ class AdminWebServer:
     async function refreshAll() {{
       setBusy(true);
       try {{
-        await Promise.all([loadKeywords(false), loadGroups(false), loadConfig(false)]);
+        await Promise.all([
+          loadKeywords(false),
+          loadGroups(false),
+          loadConfig(false),
+          loadClassifierStatus(false),
+          loadDiscoveredGroups('pending'),
+        ]);
         updateSummary();
         setStatus('Barcha bo\\'limlar yangilandi');
       }} catch (e) {{
@@ -1129,6 +1265,88 @@ class AdminWebServer:
       }} finally {{
         setBusy(false);
       }}
+    }}
+    async function loadClassifierStatus(showStatus=false) {{
+      try {{
+        const data = await req('/api/classifier');
+        const el = document.getElementById('classifier_summary');
+        if (!data.enabled) {{
+          el.textContent = 'Classifier yoqilmagan: ' + (data.reason || 'unknown');
+        }} else if (!data.available) {{
+          el.textContent = 'Model fayli topilmadi: ' + (data.model_path || '-');
+        }} else {{
+          el.innerHTML = (
+            '<div><strong>Status:</strong> loaded</div>' +
+            '<div><strong>Veto Threshold:</strong> ' + data.veto_threshold.toFixed(2) + '</div>' +
+            '<div><strong>Model:</strong> ' + (data.model_path || '-') + '</div>'
+          );
+        }}
+        if (showStatus) setStatus('Classifier holati yangilandi');
+      }} catch (e) {{
+        const el = document.getElementById('classifier_summary');
+        el.textContent = 'Xato: ' + String(e);
+        if (showStatus) setStatus(String(e), true);
+      }}
+    }}
+    state.discoveryFilter = 'pending';
+    async function loadDiscoveredGroups(filter) {{
+      if (filter) state.discoveryFilter = filter;
+      const status = state.discoveryFilter || 'pending';
+      try {{
+        const data = await req('/api/discovery/groups?status=' + status + '&limit=300');
+        const summary = document.getElementById('discovery_summary');
+        summary.textContent = data.count + ' ta guruh (' + status + ')';
+        const list = document.getElementById('discovery_list');
+        if (!data.groups || data.groups.length === 0) {{
+          list.innerHTML = '<div class="muted">Bo\\'sh</div>';
+          return;
+        }}
+        list.innerHTML = data.groups.map(g => {{
+          const label = g.username ? '@' + g.username : (g.title || g.peer_id);
+          const joined = g.joined ? '✓' : '·';
+          const activeBtn = g.username ? (
+            '<button class="btn-mini" onclick="discoveryToggle(\\'' + g.username + '\\',' + (g.active ? 'false' : 'true') + ')">' +
+            (g.active ? 'Deactivate' : 'Activate') + '</button>'
+          ) : '';
+          return (
+            '<div class="row" style="padding:6px 0; border-bottom:1px solid var(--line); gap:8px;">' +
+              '<span style="min-width:18px;">' + joined + '</span>' +
+              '<span style="flex:1; word-break:break-all;">' + escapeHtml(g.title || '(no title)') + '<br><small class="muted">' + escapeHtml(label) + ' · ' + escapeHtml(g.source_query || '') + '</small></span>' +
+              activeBtn +
+            '</div>'
+          );
+        }}).join('');
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }}
+    }}
+    async function discoveryRun() {{
+      setBusy(true);
+      try {{
+        setStatus('Discovery ishga tushyapti...');
+        await req('/api/discovery/run', {{}});
+        setStatus('Discovery iteration bajarildi');
+        await loadDiscoveredGroups();
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    async function discoveryToggle(username, active) {{
+      setBusy(true);
+      try {{
+        await req('/api/discovery/groups/toggle', {{username, active}});
+        await loadDiscoveredGroups();
+        setStatus(username + (active ? ' aktivlashtirildi' : ' o\\'chirildi'));
+      }} catch (e) {{
+        setStatus(String(e), true);
+      }} finally {{
+        setBusy(false);
+      }}
+    }}
+    function escapeHtml(s) {{
+      return String(s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
     }}
     async function loadKeywords(showStatus=true) {{
       try {{
@@ -1174,6 +1392,7 @@ class AdminWebServer:
         cfg_discovery_query_limit.value = nvl(cfg.discovery_query_limit, '');
         cfg_discovery_join_batch.value = nvl(cfg.discovery_join_batch, '');
         cfg_discovery_queries.value = (cfg.discovery_queries || []).join('\\n');
+        cfg_classifier_veto_threshold.value = nvl(cfg.classifier_veto_threshold, '');
         updateSummary();
         if (showStatus) setStatus('Runtime config yuklandi');
       }} catch (e) {{
@@ -1209,6 +1428,7 @@ class AdminWebServer:
           discovery_query_limit: withFallback(cfg_discovery_query_limit.value, nvl(current.discovery_query_limit, '')),
           discovery_join_batch: withFallback(cfg_discovery_join_batch.value, nvl(current.discovery_join_batch, '')),
           discovery_queries: discoveryQueries.length ? discoveryQueries : (current.discovery_queries || []),
+          classifier_veto_threshold: withFallback(cfg_classifier_veto_threshold.value, nvl(current.classifier_veto_threshold, '')),
         }};
         values.min_human_delay_sec = minDelay;
         values.max_human_delay_sec = maxDelay;

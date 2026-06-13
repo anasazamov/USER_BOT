@@ -23,6 +23,7 @@ CONFIG_KEYS: tuple[str, ...] = (
     "discovery_query_limit",
     "discovery_join_batch",
     "discovery_queries",
+    "classifier_veto_threshold",
 )
 
 
@@ -40,6 +41,7 @@ class RuntimeConfigSnapshot:
     discovery_query_limit: int
     discovery_join_batch: int
     discovery_queries: tuple[str, ...]
+    classifier_veto_threshold: float = 0.3
     version: int = 0
 
     def as_json(self) -> dict[str, Any]:
@@ -56,6 +58,7 @@ class RuntimeConfigSnapshot:
             "discovery_query_limit": self.discovery_query_limit,
             "discovery_join_batch": self.discovery_join_batch,
             "discovery_queries": list(self.discovery_queries),
+            "classifier_veto_threshold": self.classifier_veto_threshold,
             "version": self.version,
         }
 
@@ -202,7 +205,7 @@ class RuntimeConfigService:
         if key == "per_group_replies_10m":
             return self._parse_int(raw, 0, 30)
         if key == "join_limit_day":
-            return self._parse_int(raw, 0, 20)
+            return self._parse_int(raw, 0, 500)
         if key == "global_actions_minute":
             return self._parse_int(raw, 0, 1000)
         if key == "min_human_delay_sec":
@@ -217,6 +220,8 @@ class RuntimeConfigService:
             return self._parse_int(raw, 1, 30)
         if key == "discovery_queries":
             return self._parse_queries(raw)
+        if key == "classifier_veto_threshold":
+            return self._parse_float(raw, 0.0, 1.0)
         raise ValueError("invalid_config_key")
 
     @staticmethod
@@ -241,6 +246,7 @@ class RuntimeConfigService:
             "discovery_query_limit": self.settings.discovery_query_limit,
             "discovery_join_batch": self.settings.discovery_join_batch,
             "discovery_queries": tuple(self.settings.discovery_queries),
+            "classifier_veto_threshold": self.settings.classifier_veto_threshold,
         }
 
     def _build_snapshot(self, current: dict[str, Any]) -> dict[str, Any]:
@@ -262,4 +268,5 @@ class RuntimeConfigService:
             "discovery_query_limit": int(current["discovery_query_limit"]),
             "discovery_join_batch": int(current["discovery_join_batch"]),
             "discovery_queries": tuple(current["discovery_queries"]),
+            "classifier_veto_threshold": float(current["classifier_veto_threshold"]),
         }

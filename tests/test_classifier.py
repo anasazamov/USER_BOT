@@ -112,6 +112,31 @@ def test_decision_engine_skips_veto_when_classifier_unavailable() -> None:
     assert decision.should_forward is True
 
 
+def test_classifier_uses_runtime_config_threshold_dynamically(tmp_path: Path) -> None:
+    """The veto threshold should be re-read from runtime_config on every call,
+    so admin web edits take effect without restarting the classifier."""
+
+    class _MutableRuntime:
+        def __init__(self, threshold: float) -> None:
+            self._threshold = threshold
+
+        def snapshot(self):
+            return SimpleNamespace(classifier_veto_threshold=self._threshold)
+
+        def set_threshold(self, value: float) -> None:
+            self._threshold = value
+
+    runtime = _MutableRuntime(0.5)
+    clf = TaxiOrderClassifier(
+        model_path=tmp_path / "missing.joblib",
+        veto_threshold=0.99,  # would normally win, but runtime overrides
+        runtime_config=runtime,
+    )
+    assert clf.veto_threshold == 0.5
+    runtime.set_threshold(0.25)
+    assert clf.veto_threshold == 0.25
+
+
 def test_decision_engine_classifier_does_not_run_on_already_rejected() -> None:
     # Pre-rejected (offer-dominant) messages must not invoke the classifier.
     sentinel = SimpleNamespace(called=False)

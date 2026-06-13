@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from contextlib import suppress
+from typing import Any
 
 from telethon import TelegramClient, events
 
@@ -729,10 +730,12 @@ def build_userbot(
     repository: ActionRepository,
     keyword_service: KeywordService,
     runtime_config: RuntimeConfigService | None = None,
+    classifier: Any = None,
 ) -> TelegramUserbot:
-    from app.classifier import TaxiOrderClassifier
+    if classifier is None:
+        from app.classifier import TaxiOrderClassifier
 
-    classifier = TaxiOrderClassifier()
+        classifier = TaxiOrderClassifier(runtime_config=runtime_config)
     return TelegramUserbot(
         settings=settings,
         client=client,
