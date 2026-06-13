@@ -102,6 +102,16 @@ class Settings:
     )
     priority_group_links_2: tuple[str, ...] = ()
     classifier_veto_threshold: float = 0.3
+    # Discovery + invite manager only run during this UTC hour window. UZ is
+    # UTC+5, so 18:00-02:00 UTC = 23:00-07:00 local — taxi traffic is light at
+    # night, freeing the Telethon socket from search/join RPCs during the day.
+    # Window wraps midnight when end < start.
+    discovery_active_hour_utc_start: int = 18
+    discovery_active_hour_utc_end: int = 2
+    # Inline dedup of identical normalized text so the classifier doesn't get
+    # called on the same driver-spam blast that 5+ groups forward in parallel.
+    message_dedup_cache_size: int = 4096
+    message_dedup_ttl_sec: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -194,6 +204,10 @@ class Settings:
                 if q.strip()
             ),
             classifier_veto_threshold=float(os.environ.get("CLASSIFIER_VETO_THRESHOLD", "0.3")),
+            discovery_active_hour_utc_start=int(os.environ.get("DISCOVERY_ACTIVE_HOUR_UTC_START", "18")),
+            discovery_active_hour_utc_end=int(os.environ.get("DISCOVERY_ACTIVE_HOUR_UTC_END", "2")),
+            message_dedup_cache_size=int(os.environ.get("MESSAGE_DEDUP_CACHE_SIZE", "4096")),
+            message_dedup_ttl_sec=int(os.environ.get("MESSAGE_DEDUP_TTL_SEC", "300")),
             priority_group_links=tuple(
                 q.strip()
                 for q in os.environ.get(

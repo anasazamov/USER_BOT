@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from contextlib import suppress
+from time import monotonic
 from typing import Any
 
 from telethon import TelegramClient, events
@@ -51,6 +53,12 @@ class TelegramUserbot:
         self._dirty_chat_states: set[int] = set()
         self._history_task: asyncio.Task[None] | None = None
         self._history_stop = asyncio.Event()
+        # LRU + TTL dedup of normalized message bodies. A driver blast that
+        # gets re-posted across 5+ taxi groups arrives here as 5 identical
+        # texts; the cache lets us skip queueing + classifying duplicates.
+        self._dedup_cache: OrderedDict[str, float] = OrderedDict()
+        self._dedup_max_size = max(64, int(settings.message_dedup_cache_size))
+        self._dedup_ttl_sec = max(10, int(settings.message_dedup_ttl_sec))
         self.workers = WorkerPool(
             queue=queue,
             processor=self._process_message,
@@ -58,6 +66,30 @@ class TelegramUserbot:
             poll_timeout=settings.worker_poll_timeout,
         )
         self._wire_handlers()
+
+    def _is_recent_duplicate(self, normalized_text: str) -> bool:
+        """Return True if we've already seen the same normalized text within
+        the configured TTL window. Updates the cache as a side effect.
+        """
+        if not normalized_text:
+            return False
+        now = monotonic()
+        # Sweep expired entries from the LRU front; OrderedDict iteration is
+        # cheap and we only walk while entries are old.
+        while self._dedup_cache:
+            oldest_key = next(iter(self._dedup_cache))
+            if now - self._dedup_cache[oldest_key] > self._dedup_ttl_sec:
+                self._dedup_cache.pop(oldest_key, None)
+            else:
+                break
+        if normalized_text in self._dedup_cache:
+            self._dedup_cache.move_to_end(normalized_text)
+            self._dedup_cache[normalized_text] = now
+            return True
+        if len(self._dedup_cache) >= self._dedup_max_size:
+            self._dedup_cache.popitem(last=False)
+        self._dedup_cache[normalized_text] = now
+        return False
 
     def _wire_handlers(self) -> None:
         async def process_event(event: events.common.EventCommon, source: str) -> None:
@@ -265,6 +297,23 @@ class TelegramUserbot:
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "reason": result.reason,
+                    **normalized_context,
+                },
+            )
+            return
+
+        # Dedup identical normalized text seen within TTL. The same driver-
+        # blast often hits 5+ joined groups simultaneously; without this we
+        # classify and queue each copy.
+        if self._is_recent_duplicate(normalized):
+            logger.info(
+                "message_filtered",
+                extra={
+                    "action": "filter_drop",
+                    "source": source,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reason": "duplicate_recent",
                     **normalized_context,
                 },
             )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 from contextlib import suppress
 
@@ -19,13 +20,25 @@ class InviteLinkManager:
         executor: ActionExecutor,
         client: TelegramClient,
         interval_sec: int,
+        active_hour_utc_start: int = 18,
+        active_hour_utc_end: int = 2,
     ) -> None:
         self.repository = repository
         self.executor = executor
         self.client = client
         self.interval_sec = interval_sec
+        self.active_hour_utc_start = active_hour_utc_start
+        self.active_hour_utc_end = active_hour_utc_end
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+
+    @staticmethod
+    def _is_in_active_window(now_utc_hour: int, start: int, end: int) -> bool:
+        if start == end:
+            return True
+        if start < end:
+            return start <= now_utc_hour < end
+        return now_utc_hour >= start or now_utc_hour < end
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="invite-link-manager")
@@ -50,6 +63,23 @@ class InviteLinkManager:
             return False
         if not await self._is_authorized():
             return False
+        # Stay off the Telethon socket during taxi peak hours; private-invite
+        # imports get long FloodWaits which block the connection.
+        now_utc_hour = _dt.datetime.now(_dt.timezone.utc).hour
+        if not self._is_in_active_window(
+            now_utc_hour, self.active_hour_utc_start, self.active_hour_utc_end
+        ):
+            logger.info(
+                "invite_manager_off_hours",
+                extra={
+                    "action": "invite_scan",
+                    "reason": (
+                        f"now_utc_hour={now_utc_hour} "
+                        f"active_window_utc={self.active_hour_utc_start}-{self.active_hour_utc_end}"
+                    ),
+                },
+            )
+            return True
         try:
             remaining = float(getattr(self.executor, "import_invite_floodwait_remaining", 0) or 0)
             if remaining > 0:

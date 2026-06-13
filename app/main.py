@@ -156,7 +156,14 @@ async def main() -> None:
     )
     with suppress(Exception):
         await executor.refresh_private_invite_route_cache()
-    invite_manager = InviteLinkManager(repository, executor, client, settings.invite_sync_interval_sec)
+    invite_manager = InviteLinkManager(
+        repository,
+        executor,
+        client,
+        settings.invite_sync_interval_sec,
+        active_hour_utc_start=settings.discovery_active_hour_utc_start,
+        active_hour_utc_end=settings.discovery_active_hour_utc_end,
+    )
     classifier = TaxiOrderClassifier(runtime_config=runtime_config)
     discovery_manager: GroupDiscoveryManager | None = None
     if settings.discovery_enabled:
@@ -169,6 +176,8 @@ async def main() -> None:
             query_limit=settings.discovery_query_limit,
             join_batch=settings.discovery_join_batch,
             runtime_config=runtime_config,
+            active_hour_utc_start=settings.discovery_active_hour_utc_start,
+            active_hour_utc_end=settings.discovery_active_hour_utc_end,
         )
     web_server: AdminWebServer | None = None
     if settings.admin_web_enabled:

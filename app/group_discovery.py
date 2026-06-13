@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import re
 import time
@@ -99,6 +100,8 @@ class GroupDiscoveryManager:
         query_limit: int,
         join_batch: int,
         runtime_config: RuntimeConfigService | None = None,
+        active_hour_utc_start: int = 18,
+        active_hour_utc_end: int = 2,
     ) -> None:
         self.client = client
         self.repository = repository
@@ -108,6 +111,8 @@ class GroupDiscoveryManager:
         self.query_limit = query_limit
         self.join_batch = join_batch
         self.runtime_config = runtime_config
+        self.active_hour_utc_start = active_hour_utc_start
+        self.active_hour_utc_end = active_hour_utc_end
         self.geo = GeoResolver()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -137,11 +142,39 @@ class GroupDiscoveryManager:
             ran = await self._run_iteration()
             await asyncio.sleep(self.interval_sec if ran else 10)
 
+    @staticmethod
+    def _is_in_active_window(now_utc_hour: int, start: int, end: int) -> bool:
+        """True if `now_utc_hour` is inside [start, end). The window may wrap
+        midnight when end < start (e.g. 18-02 means 18:00-02:00 next day)."""
+        if start == end:
+            return True  # 24-hour window: always active
+        if start < end:
+            return start <= now_utc_hour < end
+        return now_utc_hour >= start or now_utc_hour < end
+
     async def _run_iteration(self) -> bool:
         if not self.client.is_connected():
             return False
         if not await self._is_authorized():
             return False
+        # Off-peak guard: discovery is expensive on Telegram's API budget and
+        # competes with the realtime update stream. Skip it during daytime
+        # taxi-traffic hours so the socket stays clear for receive+forward.
+        now_utc_hour = _dt.datetime.now(_dt.timezone.utc).hour
+        if not self._is_in_active_window(
+            now_utc_hour, self.active_hour_utc_start, self.active_hour_utc_end
+        ):
+            logger.info(
+                "group_discovery_off_hours",
+                extra={
+                    "action": "discovery",
+                    "reason": (
+                        f"now_utc_hour={now_utc_hour} "
+                        f"active_window_utc={self.active_hour_utc_start}-{self.active_hour_utc_end}"
+                    ),
+                },
+            )
+            return True
         try:
             runtime = self.runtime_config.snapshot() if self.runtime_config else None
             if runtime and not runtime.discovery_enabled:
